@@ -73,6 +73,25 @@ __stealth_chromium_v8_revision() {
   printf '%s' "${rev}"
 }
 
+# Paths under third_party/swiftshader/ likewise live in the separate
+# SwiftShader repository, pinned by "swiftshader_revision".
+__stealth_chromium_swiftshader_revision() {
+  local cache="${MIRROR}/.swiftshader_revision"
+  if [[ -s "${cache}" ]]; then
+    cat "${cache}"
+    return
+  fi
+  local rev
+  rev="$(curl -sf "${BASE_URL}/DEPS?format=TEXT" | base64 -d |
+    sed -n "s/.*'swiftshader_revision': '\([0-9a-f]\{40\}\)'.*/\1/p" | head -1)"
+  if [[ -z "${rev}" ]]; then
+    echo "" >&2
+    return
+  fi
+  printf '%s' "${rev}" > "${cache}"
+  printf '%s' "${rev}"
+}
+
 count=0
 fail=0
 while IFS= read -r rel; do
@@ -92,6 +111,18 @@ while IFS= read -r rel; do
       echo "# v8/ paths resolved to V8 @ ${V8_REV}" >&2
     fi
     url="https://chromium.googlesource.com/v8/v8/+/${V8_REV}/${rel#v8/}"
+  fi
+  if [[ "${rel}" == third_party/swiftshader/* ]]; then
+    if [[ -z "${SWIFTSHADER_REV:-}" ]]; then
+      SWIFTSHADER_REV="$(__stealth_chromium_swiftshader_revision)"
+      if [[ -z "${SWIFTSHADER_REV}" ]]; then
+        echo "MISSING swiftshader_revision in DEPS for ${REF}" >&2
+        fail=$((fail + 1))
+        continue
+      fi
+      echo "# third_party/swiftshader/ paths resolved to SwiftShader @ ${SWIFTSHADER_REV}" >&2
+    fi
+    url="https://swiftshader.googlesource.com/SwiftShader/+/${SWIFTSHADER_REV}/${rel#third_party/swiftshader/}"
   fi
   if curl -sf "${url}?format=TEXT" | base64 -d > "${dest}"; then
     count=$((count + 1))

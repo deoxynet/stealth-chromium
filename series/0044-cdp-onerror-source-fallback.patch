@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stealth Chromium contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 0044] fingerprint: onerror source falls back to document URL under Runtime sessions
+X-Spec: onerror source consistency
+X-Files: third_party/blink/renderer/bindings/core/v8/capture_source_location.cc
+
+---
+
+--- a/third_party/blink/renderer/bindings/core/v8/capture_source_location.cc
++++ b/third_party/blink/renderer/bindings/core/v8/capture_source_location.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <memory>
+ 
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+ #include "third_party/blink/renderer/core/dom/document.h"
+ #include "third_party/blink/renderer/core/dom/scriptable_document_parser.h"
+@@ -120,8 +121,22 @@
+   }
+ 
+   if ((!script_id || !line_number) && stack_trace && !stack_trace->isEmpty()) {
+-    return SourceLocation::CreateFromNonEmptyV8StackTraceInternal(
+-        std::move(stack_trace));
++    // Stealth Chromium: when a CDP Runtime agent is enabled, V8 captures an
++    // uncaught-exception message stack trace, so this early return is taken
++    // and a string-compiled script (e.g. setTimeout("...")) whose top frame
++    // has an empty source URL reaches window.onerror as
++    // event.filename === "" while without a session the empty script
++    // origin falls back to the document URL below. Fall through to that
++    // same resolution when the top frame URL is empty so both paths agree.
++    // Off-values keep the stock (session-dependent) behavior.
++    bool top_url_empty = true;
++    if (auto top_url = stack_trace->topSourceURL()) {
++      top_url_empty = top_url->string().length() == 0;
++    }
++    if (!(fingerprint::Enabled() && top_url_empty)) {
++      return SourceLocation::CreateFromNonEmptyV8StackTraceInternal(
++          std::move(stack_trace));
++    }
+   }
+ 
+   String url = ToCoreStringWithUndefinedOrNullCheck(

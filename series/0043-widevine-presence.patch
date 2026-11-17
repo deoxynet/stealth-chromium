@@ -1,0 +1,337 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stealth Chromium contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 0043] fingerprint: phantom Widevine presence for the EME surface
+X-Spec: widevine presence persona
+X-Files: media/cdm/phantom_widevine.h media/base/key_systems_impl.cc media/mojo/clients/mojo_cdm_factory.cc
+
+---
+
+--- /dev/null
++++ b/media/cdm/phantom_widevine.h
+@@ -0,0 +1,251 @@
++// Copyright 2026 The Stealth Chromium Authors
++// Use of this source code is governed by a GPLv3 license that can be
++// found in the LICENSE file of the Stealth Chromium distribution.
++
++#ifndef MEDIA_CDM_PHANTOM_WIDEVINE_H_
++#define MEDIA_CDM_PHANTOM_WIDEVINE_H_
++
++#include <atomic>
++#include <cstdint>
++#include <string>
++#include <vector>
++
++#include "base/command_line.h"
++#include "base/notreached.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_util.h"
++#include "media/base/cdm_key_information.h"
++#include "media/base/content_decryption_module.h"
++#include "media/base/eme_constants.h"
++#include "media/base/encryption_scheme.h"
++#include "media/base/key_system_info.h"
++#include "third_party/widevine/cdm/widevine_cdm_common.h"
++
++// Stealth Chromium: phantom Widevine presence for the EME surface.
++//
++// A stock Chromium build without the Widevine CDM rejects every
++// `requestMediaKeySystemAccess('com.widevine.alpha', ...)` query, which
++// contradicts a Chrome persona (real desktop Chrome always ships an L3 CDM)
++// and is a classic headless/bot tell. Detection code only probes *presence*
++// and never exercises a real license flow, so we register a phantom
++// Widevine key system (support query + config negotiation + a stub CDM)
++// without shipping or loading the proprietary CDM.
++//
++// The phantom reports a software-only (L3, HW_SECURE_* rejected) capability
++// set that mirrors what real Chrome answers for `com.widevine.alpha` at this
++// tag. If a real CDM is registered (side-loaded component), the phantom
++// stays dormant: KeySystemsImpl only injects it when the browser process
++// reported no Widevine key system info (see key_systems_impl.cc).
++//
++// Everything here is deterministic and seed-independent: the presence
++// ladder, not the values, is the fingerprint-relevant surface.
++
++namespace media::phantom_widevine {
++
++// Mirror of fingerprint::Enabled() (third_party/blink/public/common/
++// fingerprint/fingerprint.h), re-implemented locally because //media must
++// not depend on //third_party/blink/public/common. Keep the off-value list
++// in sync with that helper.
++inline bool Enabled() {
++  static const bool enabled = [] {
++    const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++    if (!cmd.HasSwitch("fingerprint")) {
++      return false;
++    }
++    const std::string value =
++        base::ToLowerASCII(cmd.GetSwitchValueASCII("fingerprint"));
++    return value != "off" && value != "false" && value != "0" &&
++           value != "disable" && value != "disabled";
++  }();
++  return enabled;
++}
++
++// Whether the phantom key system is currently registered in this process.
++// Set by KeySystemsImpl whenever the browser process delivers a key system
++// update: true only when fingerprinting is enabled AND no real Widevine
++// info was reported. MojoCdmFactory reads this so that CDM creation defers
++// to a real CDM exactly when the support query did.
++inline bool IsRegistered() {
++  static std::atomic<bool> registered{false};
++  return registered.load(std::memory_order_relaxed);
++}
++
++inline void SetRegistered(bool registered) {
++  static std::atomic<bool> flag{false};
++  flag.store(registered, std::memory_order_relaxed);
++}
++
++// The genuine Widevine key system set at this tag is exactly
++// `com.widevine.alpha` (plus a Windows-only experiment sub key system we
++// deliberately do not mirror).
++inline bool IsPhantomKeySystem(const std::string& key_system) {
++  return key_system == kWidevineKeySystem;
++}
++
++// True when `createMediaKeys()` for `key_system` should produce the stub
++// CDM below instead of reaching the (absent) real CDM service.
++inline bool ShouldCreatePhantomCdm(const std::string& key_system) {
++  return Enabled() && IsRegistered() && IsPhantomKeySystem(key_system);
++}
++
++// KeySystemInfo describing a software-only Widevine CDM as reported by real
++// desktop Chrome: cenc/webm/keyids init data, the stock codec set (gated by
++// MimeUtil exactly like stock), SW_SECURE_* robustness, HW_SECURE_* and
++// other non-empty robustness values rejected, temporary and
++// persistent-license sessions, and always-enabled distinctive identifier /
++// persistent state (Chrome cannot block the Widevine CDM from either).
++class PhantomWidevineKeySystemInfo : public KeySystemInfo {
++ public:
++  std::string GetBaseKeySystemName() const final { return kWidevineKeySystem; }
++
++  bool IsSupportedInitDataType(EmeInitDataType init_data_type) const final {
++    return init_data_type == EmeInitDataType::CENC ||
++           init_data_type == EmeInitDataType::WEBM ||
++           init_data_type == EmeInitDataType::KEYIDS;
++  }
++
++  EmeConfig::Rule GetEncryptionSchemeConfigRule(
++      EncryptionScheme encryption_scheme) const final {
++    switch (encryption_scheme) {
++      case EncryptionScheme::kCenc:
++      case EncryptionScheme::kCbcs:
++        return EmeConfig::SupportedRule();
++      case EncryptionScheme::kUnencrypted:
++        break;
++    }
++    NOTREACHED();
++  }
++
++  SupportedCodecs GetSupportedCodecs() const final {
++    // Same codec universe as Clear Key: every combination is further gated
++    // by MimeUtil and the container/codec masks in KeySystemsImpl, so the
++    // accepted (container, codec) pairs match stock exactly.
++    return EME_CODEC_WEBM_ALL | EME_CODEC_MP4_ALL;
++  }
++
++  EmeConfig::Rule GetRobustnessConfigRule(
++      const std::string& key_system,
++      EmeMediaType media_type,
++      const std::string& requested_robustness,
++      const bool* hw_secure_requirement) const final {
++    if (requested_robustness.empty() ||
++        base::StartsWith(requested_robustness, "SW_SECURE_",
++                         base::CompareCase::SENSITIVE)) {
++      return EmeConfig::SupportedRule();
++    }
++    // Desktop L3 persona: no hardware-secure path.
++    return EmeConfig::UnsupportedRule();
++  }
++
++  EmeConfig::Rule GetPersistentLicenseSessionSupport() const final {
++    return EmeConfig::SupportedRule();
++  }
++
++  EmeFeatureSupport GetPersistentStateSupport() const final {
++    return EmeFeatureSupport::ALWAYS_ENABLED;
++  }
++
++  EmeFeatureSupport GetDistinctiveIdentifierSupport() const final {
++    return EmeFeatureSupport::ALWAYS_ENABLED;
++  }
++};
++
++// Stub CDM handed to the EME stack when ShouldCreatePhantomCdm() is true.
++// It resolves createMediaKeys() offline, resolves generateRequest() with a
++// session id, and then stalls forever: update()/message/key events never
++// complete, which is indistinguishable (short of an actual license flow)
++// from a real CDM waiting for a license server that never answers. Nothing
++// ever rejects or throws.
++class PhantomWidevineCdm : public ContentDecryptionModule {
++ public:
++  PhantomWidevineCdm(const SessionMessageCB& /*session_message_cb*/,
++                     const SessionClosedCB& session_closed_cb,
++                     const SessionKeysChangeCB& /*session_keys_change_cb*/,
++                     const SessionExpirationUpdateCB&
++                     /*session_expiration_update_cb*/)
++      : session_closed_cb_(session_closed_cb) {
++    // The message/keys/expiration callbacks are never fired: the phantom
++    // session produces no events after creation (see
++    // CreateSessionAndGenerateRequest).
++  }
++
++  void SetServerCertificate(const std::vector<uint8_t>& certificate,
++                            std::unique_ptr<SimpleCdmPromise> promise) final {
++    promise->resolve();
++  }
++
++  void GetStatusForPolicy(HdcpVersion min_hdcp_version,
++                          std::unique_ptr<KeyStatusCdmPromise> promise) final {
++    // Software-only persona: content protection above HDCP 1.4 reads as
++    // output-restricted, matching a display path without an HW-secure CDM.
++    promise->resolve(min_hdcp_version <= HdcpVersion::kHdcpVersion1_4
++                         ? CdmKeyInformation::USABLE
++                         : CdmKeyInformation::OUTPUT_RESTRICTED);
++  }
++
++  void CreateSessionAndGenerateRequest(
++      CdmSessionType session_type,
++      EmeInitDataType init_data_type,
++      const std::vector<uint8_t>& init_data,
++      std::unique_ptr<NewSessionCdmPromise> promise) final {
++    // Success, then silence: the session is created (the promise resolves
++    // with a session id) but no license request message is ever produced
++    // and no keys ever appear, so the session pends until it is closed or
++    // the document goes away -- the close approximation of a real CDM
++    // waiting on an unreachable license server that Chromium's EME stack
++    // permits without rejecting anything.
++    promise->resolve(NextSessionId());
++  }
++
++  void LoadSession(CdmSessionType session_type,
++                   const std::string& session_id,
++                   std::unique_ptr<NewSessionCdmPromise> promise) final {
++    // No persistent sessions were ever stored: "not found", not an error.
++    promise->resolve(std::string());
++  }
++
++  void UpdateSession(const std::string& session_id,
++                     const std::vector<uint8_t>& response,
++                     std::unique_ptr<SimpleCdmPromise> promise) final {
++    // Deliberately never resolved: a license response can never validate
++    // because no license request was ever issued.
++  }
++
++  void CloseSession(const std::string& session_id,
++                    std::unique_ptr<SimpleCdmPromise> promise) final {
++    promise->resolve();
++    session_closed_cb_.Run(session_id, CdmSessionClosedReason::kClose);
++  }
++
++  void RemoveSession(const std::string& session_id,
++                     std::unique_ptr<SimpleCdmPromise> promise) final {
++    promise->resolve();
++  }
++
++  CdmContext* GetCdmContext() final {
++    // No decryptor: actual encrypted playback is impossible without keys,
++    // which is exactly what a CDM without a license provides.
++    return nullptr;
++  }
++
++ private:
++  // Deterministic, seed-independent session ids (fixed 64-bit FNV counter,
++  // hex-encoded). Only the shape is observable; real Widevine session ids
++  // are opaque variable-length strings.
++  static std::string NextSessionId() {
++    static std::atomic<uint64_t> counter{0};
++    const uint64_t n = counter.fetch_add(1, std::memory_order_relaxed) + 1;
++    uint64_t hash = 0xcbf29ce484222325ULL;
++    for (int i = 0; i < 8; ++i) {
++      hash ^= (n >> (8 * i)) & 0xff;
++      hash *= 0x100000001b3ULL;
++    }
++    return base::HexEncode(&hash, sizeof(hash));
++  }
++
++  SessionClosedCB session_closed_cb_;
++};
++
++}  // namespace media::phantom_widevine
++
++#endif  // MEDIA_CDM_PHANTOM_WIDEVINE_H_
+--- a/media/base/key_systems_impl.cc
++++ b/media/base/key_systems_impl.cc
+@@ -22,7 +22,9 @@
+ #include "media/base/media_switches.h"
+ #include "media/base/mime_util.h"
+ #include "media/cdm/clear_key_cdm_common.h"
++#include "media/cdm/phantom_widevine.h"
+ #include "media/media_buildflags.h"
++#include "third_party/widevine/cdm/widevine_cdm_common.h"
+ 
+ namespace media {
+ 
+@@ -325,6 +327,29 @@
+ 
+   is_updating_ = false;
+ 
++  // Stealth Chromium: inject the phantom Widevine key system when
++  // fingerprinting is enabled and the browser process reported no real
++  // Widevine info (no CDM component registered). This is the single choke
++  // point where renderer-side key system support is assembled, so support
++  // queries, config negotiation, and CDM creation all agree with it.
++  bool has_real_widevine = false;
++  for (const auto& info : key_systems) {
++    if (info->GetBaseKeySystemName() == kWidevineKeySystem ||
++        IsSubKeySystemOf(info->GetBaseKeySystemName(), kWidevineKeySystem)) {
++      has_real_widevine = true;
++      break;
++    }
++  }
++  const bool phantom_registered =
++      phantom_widevine::Enabled() && !has_real_widevine;
++  if (phantom_registered) {
++    key_systems.emplace_back(
++        std::make_unique<phantom_widevine::PhantomWidevineKeySystemInfo>());
++  }
++  // MojoCdmFactory consults this to keep createMediaKeys() coherent with
++  // the support answer above; a real CDM wins whenever one is registered.
++  phantom_widevine::SetRegistered(phantom_registered);
++
+   // Clear Key is always supported.
+   key_systems.emplace_back(std::make_unique<ClearKeyKeySystemInfo>());
+ 
+--- a/media/mojo/clients/mojo_cdm_factory.cc
++++ b/media/mojo/clients/mojo_cdm_factory.cc
+@@ -13,6 +13,7 @@
+ #include "media/base/content_decryption_module.h"
+ #include "media/base/key_systems.h"
+ #include "media/cdm/aes_decryptor.h"
++#include "media/cdm/phantom_widevine.h"
+ #include "media/mojo/clients/mojo_cdm.h"
+ #include "media/mojo/mojom/content_decryption_module.mojom.h"
+ #include "media/mojo/mojom/interface_factory.mojom.h"
+@@ -86,6 +87,21 @@
+     return;
+   }
+ 
++  // Stealth Chromium: serve the phantom Widevine CDM locally (exactly like
++  // the AesDecryptor branch above) when the support query answered with the
++  // phantom and no real CDM exists. No CDM process is spawned and no library
++  // is loaded, so CDM host verification, interface-version checks, and
++  // CDM-load crash reporting are untouched.
++  if (phantom_widevine::ShouldCreatePhantomCdm(cdm_config.key_system)) {
++    auto cdm = base::MakeRefCounted<phantom_widevine::PhantomWidevineCdm>(
++        session_message_cb, session_closed_cb, session_keys_change_cb,
++        session_expiration_update_cb);
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(std::move(cdm_created_cb), cdm,
++                                  CreateCdmStatus::kSuccess));
++    return;
++  }
++
+   // Use `mojo::WrapCallbackWithDefaultInvokeIfNotRun()` in case the CDM process
+   // crashes.
+   interface_factory_->CreateCdm(

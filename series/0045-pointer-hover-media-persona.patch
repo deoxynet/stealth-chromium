@@ -1,0 +1,124 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stealth Chromium contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 0045] fingerprint: persona pointer and hover media features
+X-Spec: pointer hover persona
+X-Files: third_party/blink/renderer/core/css/media_values.cc third_party/blink/renderer/core/fingerprint/pointer_hover.h
+
+---
+
+--- a/third_party/blink/renderer/core/css/media_values.cc
++++ b/third_party/blink/renderer/core/css/media_values.cc
+@@ -16,6 +16,7 @@
+ #include "third_party/blink/renderer/core/dom/document.h"
+ #include "third_party/blink/renderer/core/dom/element.h"
+ #include "third_party/blink/renderer/core/execution_context/execution_context.h"
++#include "third_party/blink/renderer/core/fingerprint/pointer_hover.h"
+ #include "third_party/blink/renderer/core/fingerprint/screen_dimensions.h"
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/core/frame/local_frame_view.h"
+@@ -364,12 +365,21 @@
+     LocalFrame* frame) {
+   DCHECK(frame);
+   DCHECK(frame->GetSettings());
++  // Stealth Chromium: persona answer before the (possibly empty) real
++  // device list — headless reports kPointerNone against a desktop persona.
++  if (auto t = fingerprint::SpoofedPrimaryPointerType()) {
++    return *t;
++  }
+   return frame->GetSettings()->GetPrimaryPointerType();
+ }
+ 
+ int MediaValues::CalculateAvailablePointerTypes(LocalFrame* frame) {
+   DCHECK(frame);
+   DCHECK(frame->GetSettings());
++  // Stealth Chromium: fine mouse only (see fingerprint/pointer_hover.h).
++  if (auto t = fingerprint::SpoofedAvailablePointerTypes()) {
++    return *t;
++  }
+   return frame->GetSettings()->GetAvailablePointerTypes();
+ }
+ 
+@@ -377,6 +387,10 @@
+     LocalFrame* frame) {
+   DCHECK(frame);
+   DCHECK(frame->GetSettings());
++  // Stealth Chromium: desktop-with-mouse persona claims hover.
++  if (auto h = fingerprint::SpoofedPrimaryHoverType()) {
++    return *h;
++  }
+   return frame->GetSettings()->GetPrimaryHoverType();
+ }
+ 
+@@ -390,6 +404,10 @@
+ int MediaValues::CalculateAvailableHoverTypes(LocalFrame* frame) {
+   DCHECK(frame);
+   DCHECK(frame->GetSettings());
++  // Stealth Chromium: hover-capable mouse only (see pointer_hover.h).
++  if (auto h = fingerprint::SpoofedAvailableHoverTypes()) {
++    return *h;
++  }
+   return frame->GetSettings()->GetAvailableHoverTypes();
+ }
+ 
+--- /dev/null
++++ b/third_party/blink/renderer/core/fingerprint/pointer_hover.h
+@@ -0,0 +1,58 @@
++// Copyright 2026 The Stealth Chromium Authors
++// Use of this source code is governed by a GPLv3 license that can be
++// found in the LICENSE file of the Stealth Chromium distribution.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_POINTER_HOVER_H_
++#define THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_POINTER_HOVER_H_
++
++#include <optional>
++
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
++#include "third_party/blink/public/mojom/webpreferences/web_preferences.mojom-blink-forward.h"
++#include "ui/base/pointer/pointer_device.h"
++
++// Pointer/hover media-feature persona shared by every MediaValues
++// implementation (core/css/media_values.cc), so matchMedia, CSS parsing
++// and style recalc cannot disagree.
++//
++// Headless containers report zero input devices: primary/any pointer
++// "none", no hover — an automation signal next to a desktop persona
++// (see the noPointingDevice botstop vector). When fingerprinting is
++// enabled every pointer/hover media feature answers as a desktop with
++// a mouse, coherently with maxTouchPoints 0 (stock) and the device
++// profile's screen dimensions. Deterministic constants: no seed
++// dependence. nullopt → caller falls back to the stock device answer.
++namespace blink::fingerprint {
++
++inline std::optional<mojom::blink::PointerType> SpoofedPrimaryPointerType() {
++  if (!Enabled()) {
++    return std::nullopt;
++  }
++  return mojom::blink::PointerType::kPointerFineType;
++}
++
++inline std::optional<int> SpoofedAvailablePointerTypes() {
++  if (!Enabled()) {
++    return std::nullopt;
++  }
++  // Fine mouse only: no coarse, no touch, and crucially no "none" bit.
++  return ui::POINTER_TYPE_FINE;
++}
++
++inline std::optional<mojom::blink::HoverType> SpoofedPrimaryHoverType() {
++  if (!Enabled()) {
++    return std::nullopt;
++  }
++  return mojom::blink::HoverType::kHoverHoverType;
++}
++
++inline std::optional<int> SpoofedAvailableHoverTypes() {
++  if (!Enabled()) {
++    return std::nullopt;
++  }
++  return ui::HOVER_TYPE_HOVER;
++}
++
++}  // namespace blink::fingerprint
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_POINTER_HOVER_H_

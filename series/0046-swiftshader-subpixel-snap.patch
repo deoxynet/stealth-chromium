@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stealth Chromium contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 0046] fingerprint: swiftshader rasterizer snaps sub-pixel edges at 8 fractional bits
+X-Spec: swiftshader subpixel precision
+X-Files: third_party/swiftshader/src/Vulkan/VkConfig.hpp
+
+---
+
+--- a/third_party/swiftshader/src/Vulkan/VkConfig.hpp
++++ b/third_party/swiftshader/src/Vulkan/VkConfig.hpp
+@@ -98,7 +98,12 @@
+ 
+ constexpr int MAX_SAMPLER_ALLOCATION_COUNT = 4000;
+ 
+-constexpr int SUBPIXEL_PRECISION_BITS = SWIFTSHADER_LEGACY_PRECISION ? 4 : 8;
++// Stealth Chromium: always rasterize at hardware-matching sub-pixel
++// precision (8 fractional bits, Apple/D3D rasterizer rules) even when built
++// with SWIFTSHADER_LEGACY_PRECISION=true, so coverage boundaries snap at
++// 1/256 px like hardware GPUs instead of 1/16 px. Wider fixed-point edge
++// functions cost a small amount of rasterizer-setup arithmetic.
++constexpr int SUBPIXEL_PRECISION_BITS = 8;
+ constexpr float SUBPIXEL_PRECISION_FACTOR = static_cast<float>(1 << SUBPIXEL_PRECISION_BITS);
+ constexpr int SUBPIXEL_PRECISION_MASK = 0xFFFFFFFF >> (32 - SUBPIXEL_PRECISION_BITS);
+ 

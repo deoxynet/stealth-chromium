@@ -134,3 +134,34 @@ divergences: [docs/features/](features/).
   closed to the persona inventory (persona lists + `--fingerprint-fonts-dir`
   + generic families), closing the `document.fonts.check` /
   measureText host-font oracle. Applies to same-platform personas too.
+- **0043 phantom Widevine presence** — a no-CDM build rejects
+  `com.widevine.alpha`, contradicting any Chrome persona. When
+  fingerprinting is on and no real CDM is registered, a phantom key-system
+  entry (`media/cdm/phantom_widevine.h`) is injected at
+  `KeySystemsImpl::OnSupportedKeySystemsUpdated` and `MojoCdmFactory`
+  builds a local stub CDM (the AesDecryptor pattern), so the full
+  network-free probe ladder — support query, `getConfiguration()`,
+  `createMediaKeys()`, `generateRequest()` (which resolves then stalls
+  like a CDM awaiting its license server) — matches desktop Chrome with
+  an L3 CDM. A real side-loaded CDM wins whenever present; fingerprint
+  off ⇒ stock rejections.
+- **0044 onerror source consistency** — stock Chromium leaks `""` as
+  `ErrorEvent.filename` for string-compiled timer scripts under a CDP
+  `Runtime.enable` session (no session falls back to the document URL).
+  In `CaptureSourceLocation`'s stack-trace early-return path, an empty
+  top-frame URL now falls through to the document-URL resolution —
+  gated on fingerprinting; off ⇒ the stock artifact. Workers (blob:)
+  and `new Error().stack` untouched.
+- **0045 pointer/hover persona** — the four `MediaValues::Calculate*`
+  statics (the same choke level 0007 uses for screen size) report a
+  desktop-with-mouse answer: `(pointer|any-pointer): fine`,
+  `(hover|any-hover): hover`, no `none` bits; `maxTouchPoints` stays 0.
+  Constant per persona, no seed; off ⇒ real device answers.
+- **0046 SwiftShader sub-pixel precision** — one constant in
+  `third_party/swiftshader/src/Vulkan/VkConfig.hpp`
+  (`SUBPIXEL_PRECISION_BITS`: 4 → 8, matching hardware rasterizer rules
+  and upstream's non-legacy default) so a software-GL rig's coverage
+  boundaries snap at 1/256 px like hardware instead of 1/16.
+  Unconditional fidelity fix, not fingerprint-gated; the shader-*timing*
+  twin of that probe still needs a fast host or a real GPU. Served by
+  fetch-upstream's new DEPS-pinned SwiftShader resolution.

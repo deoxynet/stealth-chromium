@@ -18,9 +18,9 @@ See [docs/BUILDING.md](docs/BUILDING.md) to actually compile the browser
 (Dockerfile + end-to-end build script + post-build fingerprint smoke
 test).
 
-**Status: all 42 patches implemented and machine-verified against
-Chromium `146.0.7680.177`** (verify.sh: 42/42; patch 0038 additionally touches
-V8 sources, resolved via the DEPS-pinned v8 revision) (every surface in the spec catalog; remaining
+**Status: all 46 patches implemented and machine-verified against
+Chromium `146.0.7680.177`** (verify.sh: 46/46; patches 0038 and 0046 touch
+V8 / SwiftShader sources, resolved via the DEPS-pinned revisions) (every surface in the spec catalog; remaining
 approximations are listed in
 [docs/patch-status.md](docs/patch-status.md) "Open items").
 

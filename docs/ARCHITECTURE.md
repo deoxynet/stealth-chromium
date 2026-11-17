@@ -74,6 +74,23 @@ Bromite runtime-feature wiring (`runtime_enabled_features.json5`,
 The legacy Bromite switch names are still declared (0001) so launchers
 written against them keep working; they are inert.
 
+### Audio readback boundary and limit
+
+Patch 0015 applies the once-per-channel noise in the JavaScript-facing
+`getChannelData(unsigned, ExceptionState&)` overload and in `copyFromChannel`.
+The internal `getChannelData(unsigned)` overload stays stock: offline rendering
+uses it to share an uninitialized buffer before writing the rendered samples.
+Applying noise there would consume the guard too early, then have the renderer
+overwrite the noise. `tools/test-audio-noise.py` compiles those extracted
+accessor bodies with small adapters and exercises that sequence; it does not
+replace a full Blink build or the post-build smoke test.
+
+The additive offset depends on seed and sample index, with no signal, buffer,
+channel or origin separation. A known-zero buffer therefore reveals the same
+offset for subtraction. Fixing the readback boundary does not resolve that
+calibration weakness, and changing an exact fingerprint sum is not a claim of
+fingerprinting resistance.
+
 ## Consistency guarantees (what the series preserves)
 
 - JS and CSS see the same spoofed screen size (0007 hooks both

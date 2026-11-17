@@ -31,6 +31,9 @@ jobs:
           python-version: "3.12"
       - name: Verify series
         run: tools/verify.sh ${CHROMIUM_REF}
+      - name: Audio readback regression (extracted C++)
+        if: env.CHROMIUM_REF == '' || env.CHROMIUM_REF == '146.0.7680.177'
+        run: python3 tools/test-audio-noise.py
       - name: Summary
         if: always()
         run: |

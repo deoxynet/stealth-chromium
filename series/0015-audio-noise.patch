@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
-Subject: [PATCH 15/33] fingerprint: deterministic AudioBuffer sample noise
+Subject: [PATCH 15/46] fingerprint: deterministic AudioBuffer sample noise
 X-Spec: patches/06-audio-noise.md
 X-Files: third_party/blink/renderer/modules/webaudio/audio_buffer.h third_party/blink/renderer/modules/webaudio/audio_buffer.cc
 
@@ -42,10 +42,10 @@ X-Files: third_party/blink/renderer/modules/webaudio/audio_buffer.h third_party/
 +// data (±5e-6 amplitude), keyed to (identity seed, sample index). Applied
 +// once per channel before JS sees the data.
 +void ApplyAudioFingerprintNoise(float* data, size_t length) {
-+  if (!fingerprint::NoiseEnabled() || !data || length == 0) {
++  if (!blink::fingerprint::NoiseEnabled() || !data || length == 0) {
 +    return;
 +  }
-+  const uint32_t hash = static_cast<uint32_t>(fingerprint::HashFor("audio"));
++  const uint32_t hash = static_cast<uint32_t>(blink::fingerprint::HashFor("audio"));
 +  for (size_t i = 0; i < length; ++i) {
 +    uint32_t v = static_cast<uint32_t>(i) ^ hash;
 +    v = v * 0x17385CA9u + 0x47502932u;
@@ -59,14 +59,15 @@ X-Files: third_party/blink/renderer/modules/webaudio/audio_buffer.h third_party/
  
  namespace blink {
  
-@@ -220,7 +243,16 @@
+@@ -212,7 +235,17 @@
      return NotShared<DOMFloat32Array>(nullptr);
    }
  
--  return NotShared<DOMFloat32Array>(channels_[channel_index].Get());
+-  return getChannelData(channel_index);
 +  DOMFloat32Array* array = channels_[channel_index].Get();
-+  // Stealth Chromium: perturb channel data once per channel (guard bit prevents
-+  // accumulation across repeated getChannelData/copyFromChannel calls).
++  // Apply only at the JS-facing boundary. The internal overload is also used
++  // to share uninitialized storage before offline rendering fills it. Marking
++  // the channel there would consume the guard before samples exist.
 +  if (array && channel_index < 32 &&
 +      !(noise_channel_mask_ & (1u << channel_index))) {
 +    const auto span = array->AsSpan();
@@ -76,8 +77,8 @@ X-Files: third_party/blink/renderer/modules/webaudio/audio_buffer.h third_party/
 +  return NotShared<DOMFloat32Array>(array);
  }
  
- void AudioBuffer::copyFromChannel(NotShared<DOMFloat32Array> destination,
-@@ -250,6 +282,16 @@
+ NotShared<DOMFloat32Array> AudioBuffer::getChannelData(unsigned channel_index) {
+@@ -250,6 +283,16 @@
      return;
    }
  

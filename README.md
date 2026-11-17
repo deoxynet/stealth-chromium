@@ -71,11 +71,25 @@ tools/build Dockerfile for a full-browser build environment
 ## Verification & rebasing
 
 - `tools/verify.sh` — apply the series against a tag (default: the pinned
-  base) using a sparse file mirror. See the script header.
+  base) using a sparse file mirror. This verifies patch application, not a
+  Chromium build. See the script header.
+- `python3 tools/test-audio-noise.py` — after `verify.sh`, compile extracted
+  audio helper/accessor code with small Blink adapters and exercise the
+  internal-sharing → render → JavaScript-read sequence, repeated reads and
+  channel copies. This is an isolated regression harness; run the post-build
+  smoke test as well when a patched browser binary is available.
 - `docs/REBASING.md` — the workflow for moving the series to a new Chromium
   version (the intended maintenance loop for this repo).
 - `docs/patch-status.md` — every fingerprint surface, its spec document,
   and implementation status.
+
+## Audio readback limit
+
+Audio readback is still a limited defense: patch 0015's deterministic additive
+noise repeats at each sample index across buffers and sites for a fixed seed.
+A known silent buffer exposes that offset. Subtracting it can recover the
+original signal; a changed fingerprint value alone is not evidence that this
+scheme resists a detector.
 
 ## Attribution & license
 

@@ -87,6 +87,55 @@ MEDIA_PROBE = """
   d.map(x => [x.kind, x.deviceId, x.groupId])))
 """
 
+AUDIO_PROBE = r"""
+(async () => {
+  // Match Fingerprint's linked production/demo recipe. Rendering remains offline.
+  async function render() {
+    const context = new OfflineAudioContext(1, 5000, 44100);
+    const oscillator = context.createOscillator();
+    oscillator.type = 'triangle';
+    oscillator.frequency.value = 10000;
+    const compressor = context.createDynamicsCompressor();
+    compressor.threshold.value = -50;
+    compressor.knee.value = 40;
+    compressor.ratio.value = 12;
+    compressor.attack.value = 0;
+    compressor.release.value = 0.25;
+    oscillator.connect(compressor);
+    compressor.connect(context.destination);
+    oscillator.start(0);
+    return context.startRendering();
+  }
+  function sum(samples) {
+    return samples.reduce((result, value) => result + Math.abs(value), 0);
+  }
+  function signature(samples) {
+    const bits = new Uint32Array(samples.buffer, samples.byteOffset, samples.length);
+    let hash = 2166136261;
+    for (const value of bits) hash = Math.imul(hash ^ value, 16777619) >>> 0;
+    return hash.toString(16);
+  }
+  const buffer = await render();
+  const first = buffer.getChannelData(0).slice(4500);
+  const repeated = buffer.getChannelData(0).slice(4500);
+  const copied = new Float32Array(500);
+  buffer.copyFromChannel(copied, 0, 4500);
+  const copyFirstBuffer = await render();
+  const copyFirst = new Float32Array(500);
+  copyFirstBuffer.copyFromChannel(copyFirst, 0, 4500);
+  const silent = new AudioBuffer({numberOfChannels:1, length:5000, sampleRate:44100});
+  const calibration = silent.getChannelData(0).slice(4500);
+  const recovered = first.map((value, index) => Math.fround(value-calibration[index]));
+  return {
+    fingerprint: sum(first), signature: signature(first),
+    repeatedSignature: signature(repeated), copySignature: signature(copied),
+    copyFirstSignature: signature(copyFirst),
+    calibrationNonzero: calibration.some(value => value !== 0),
+    recoveredFingerprint: sum(recovered)
+  };
+})()
+"""
+
 
 class Fail(Exception):
     pass
@@ -220,6 +269,7 @@ async def probe(binary, args):
         base["webgl"] = await b.evaluate(WEBGL_PROBE)
         base["quota"] = await b.evaluate(QUOTA_PROBE, await_promise=True)
         base["media"] = await b.evaluate(MEDIA_PROBE, await_promise=True)
+        base["audio"] = await b.evaluate(AUDIO_PROBE, await_promise=True)
         return base
     finally:
         b.stop()
@@ -260,6 +310,16 @@ async def main():
     check("device ids are 16 hex chars",
           all(re.fullmatch(r"[0-9a-f]{16}", m[1]) for m in a1["media"]),
           a1["media"][:2])
+    check("same seed -> same audio samples", a1["audio"] == a2["audio"],
+          f'{a1["audio"]} vs {a2["audio"]}')
+    check("different seed -> different rendered audio samples",
+          a1["audio"]["signature"] != b1["audio"]["signature"])
+    for label, result in [("seed A", a1["audio"]), ("seed B", b1["audio"])]:
+        check(f"{label}: repeated read and both copy paths agree",
+              all(result[key] == result["signature"] for key in
+                  ["repeatedSignature", "copySignature", "copyFirstSignature"]), result)
+        check(f"{label}: silent calibration exposes additive noise",
+              result["calibrationNonzero"], result)
 
     print("[3/5] explicit overrides + personas")
     o = await probe(ns.binary, [
@@ -290,6 +350,9 @@ async def main():
           off["platform"] == off2["platform"], off["platform"])
     check("off: canvas identical across launches (no noise)",
           off["canvasHash"] == off2["canvasHash"])
+    check("off: offline audio identical across launches",
+          off["audio"] == off2["audio"])
+    check("off: silent audio buffer stays zero", not off["audio"]["calibrationNonzero"])
 
     print("[5/5] Runtime console/exception instrumentation stealth (0038)")
     b = Browser(ns.binary, [])

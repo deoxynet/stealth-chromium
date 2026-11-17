@@ -1,0 +1,179 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 7/33] fingerprint: screen dimensions, taskbar band and media-query consistency
+X-Spec: patches/11-screen-dimensions.md
+X-Files: third_party/blink/renderer/core/frame/screen.cc third_party/blink/renderer/core/css/media_values.cc third_party/blink/renderer/core/fingerprint/screen_dimensions.h
+
+---
+
+--- a/third_party/blink/renderer/core/frame/screen.cc
++++ b/third_party/blink/renderer/core/frame/screen.cc
+@@ -31,6 +31,7 @@
+ #include "base/numerics/safe_conversions.h"
+ #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-blink.h"
+ #include "third_party/blink/renderer/core/event_target_names.h"
++#include "third_party/blink/renderer/core/fingerprint/screen_dimensions.h"
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/core/frame/settings.h"
+@@ -81,12 +82,20 @@
+ int Screen::height() const {
+   if (!DomWindow())
+     return 0;
++  // fp-patches: switch override, then persona default (900 on macOS).
++  if (auto h = fingerprint::SpoofedScreenHeight()) {
++    return *h;
++  }
+   return GetRect(/*available=*/false).height();
+ }
+ 
+ int Screen::width() const {
+   if (!DomWindow())
+     return 0;
++  // fp-patches: switch override, then persona default (1440 on macOS).
++  if (auto w = fingerprint::SpoofedScreenWidth()) {
++    return *w;
++  }
+   return GetRect(/*available=*/false).width();
+ }
+ 
+@@ -124,12 +133,26 @@
+ int Screen::availHeight() const {
+   if (!DomWindow())
+     return 0;
++  // fp-patches: spoofed height minus the persona taskbar/Dock band.
++  if (auto h = fingerprint::SpoofedScreenHeight()) {
++    return fingerprint::ApplyTaskbar(*h, fingerprint::TaskbarHeight());
++  }
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++          blink::switches::kFingerprintPlatform)) {
++    // No height spoof, but a platform persona still claims its taskbar.
++    return GetRect(/*available=*/false).height() -
++           fingerprint::ApplyTaskbar(0, fingerprint::TaskbarHeight());
++  }
+   return GetRect(/*available=*/true).height();
+ }
+ 
+ int Screen::availWidth() const {
+   if (!DomWindow())
+     return 0;
++  // fp-patches: availWidth mirrors width() (horizontal taskbar assumption).
++  if (auto w = fingerprint::SpoofedScreenWidth()) {
++    return *w;
++  }
+   return GetRect(/*available=*/true).width();
+ }
+ 
+--- a/third_party/blink/renderer/core/css/media_values.cc
++++ b/third_party/blink/renderer/core/css/media_values.cc
+@@ -16,9 +16,11 @@
+ #include "third_party/blink/renderer/core/dom/document.h"
+ #include "third_party/blink/renderer/core/dom/element.h"
+ #include "third_party/blink/renderer/core/execution_context/execution_context.h"
++#include "third_party/blink/renderer/core/fingerprint/screen_dimensions.h"
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/core/frame/local_frame_view.h"
+ #include "third_party/blink/renderer/core/frame/settings.h"
++#include "third_party/blink/renderer/core/frame/settings.h"
+ #include "third_party/blink/renderer/core/layout/adjust_for_absolute_zoom.h"
+ #include "third_party/blink/renderer/core/layout/layout_view.h"
+ #include "third_party/blink/renderer/core/media_type_names.h"
+@@ -164,6 +166,11 @@
+ 
+ int MediaValues::CalculateDeviceWidth(LocalFrame* frame) {
+   DCHECK(frame && frame->View() && frame->GetSettings() && frame->GetPage());
++  // fp-patches: media queries see the same spoofed device size as
++  // window.screen, so JS and CSS cannot disagree.
++  if (auto w = fingerprint::SpoofedScreenWidth()) {
++    return *w;
++  }
+   const display::ScreenInfo& screen_info =
+       frame->GetPage()->GetChromeClient().GetScreenInfo(*frame);
+   int device_width = screen_info.rect.width();
+@@ -176,6 +183,10 @@
+ 
+ int MediaValues::CalculateDeviceHeight(LocalFrame* frame) {
+   DCHECK(frame && frame->View() && frame->GetSettings() && frame->GetPage());
++  // fp-patches: see CalculateDeviceWidth.
++  if (auto h = fingerprint::SpoofedScreenHeight()) {
++    return *h;
++  }
+   const display::ScreenInfo& screen_info =
+       frame->GetPage()->GetChromeClient().GetScreenInfo(*frame);
+   int device_height = screen_info.rect.height();
+--- /dev/null
++++ b/third_party/blink/renderer/core/fingerprint/screen_dimensions.h
+@@ -0,0 +1,72 @@
++// Copyright 2026 The fp-patches Authors
++// Use of this source code is governed by a GPLv3 license that can be
++// found in the LICENSE file of the fp-patches distribution.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_SCREEN_DIMENSIONS_H_
++#define THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_SCREEN_DIMENSIONS_H_
++
++#include <optional>
++
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
++
++// Screen-dimension ladder shared by window.screen (core/frame/screen.cc) and
++// CSS media queries (core/css/media_values.cc) so JS and CSS agree.
++//
++// Resolution order per dimension (mirrors the vendor build):
++//   1. --fingerprint-screen-width / --fingerprint-screen-height
++//   2. platform default when both --fingerprint and --fingerprint-platform
++//      are present: macos 1440x900, anything else 1920x1080
++//   3. nullopt → caller falls back to stock behavior
++namespace blink::fingerprint {
++
++inline bool HasPlatformDefault() {
++  return Seed() &&
++         base::CommandLine::ForCurrentProcess()->HasSwitch(
++             switches::kFingerprintPlatform);
++}
++
++inline std::optional<int> SpoofedScreenWidth() {
++  if (auto w = SwitchUint(switches::kFingerprintScreenWidth)) {
++    return static_cast<int>(*w);
++  }
++  if (HasPlatformDefault()) {
++    return SpoofedPlatform() == Platform::kMacOs ? 1440 : 1920;
++  }
++  return std::nullopt;
++}
++
++inline std::optional<int> SpoofedScreenHeight() {
++  if (auto h = SwitchUint(switches::kFingerprintScreenHeight)) {
++    return static_cast<int>(*h);
++  }
++  if (HasPlatformDefault()) {
++    return SpoofedPlatform() == Platform::kMacOs ? 900 : 1080;
++  }
++  return std::nullopt;
++}
++
++// Taskbar/Dock band subtracted from availHeight. 48px on the Windows persona
++// (default taskbar), 95px on macOS (default Dock), 0 otherwise; explicit
++// --fingerprint-taskbar-height wins.
++inline int TaskbarHeight() {
++  if (auto t = SwitchUint(switches::kFingerprintTaskbarHeight)) {
++    return static_cast<int>(*t);
++  }
++  switch (SpoofedPlatform()) {
++    case Platform::kWindows:
++      return 48;
++    case Platform::kMacOs:
++      return 95;
++    default:
++      return 0;
++  }
++}
++
++// availHeight = height - (height > taskbar ? taskbar : 0); never negative.
++inline int ApplyTaskbar(int height, int taskbar) {
++  return height - (height > taskbar ? taskbar : 0);
++}
++
++}  // namespace blink::fingerprint
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_SCREEN_DIMENSIONS_H_

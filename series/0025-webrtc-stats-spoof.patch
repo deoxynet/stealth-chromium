@@ -1,0 +1,94 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 25] fingerprint: RTCStatsReport address spoof
+X-Spec: patches/23-webrtc-stats-spoof.md
+X-Files: third_party/blink/renderer/modules/peerconnection/rtc_stats_report.cc
+
+---
+
+--- a/third_party/blink/renderer/modules/peerconnection/rtc_stats_report.cc
++++ b/third_party/blink/renderer/modules/peerconnection/rtc_stats_report.cc
+@@ -4,12 +4,16 @@
+ 
+ #include "third_party/blink/renderer/modules/peerconnection/rtc_stats_report.h"
+ 
++#include "base/command_line.h"
+ #include "base/compiler_specific.h"
+ #include "base/feature_list.h"
+ #include "base/notimplemented.h"
+ #include "base/notreached.h"
+ #include "base/numerics/safe_conversions.h"
++#include "base/strings/string_util.h"
+ #include "third_party/blink/public/common/features.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
++#include "third_party/blink/public/common/switches.h"
+ #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_object_builder.h"
+ #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_audio_playout_stats.h"
+@@ -481,6 +485,28 @@
+   SET_STAT(webrtc_stat.rtcp_transport_stats_id,
+            v8_stat->setRtcpTransportStatsId);
+   return v8_stat;
++}
++
++// fp-patches: substitute the --fingerprint-webrtc-ip value for candidate
++// stat addresses. Passes the input through when the spoof is inactive
++// (fingerprinting off, switch absent, empty or non-ASCII value) or the
++// input is empty/loopback/wildcard — the same exemption set as the ICE
++// candidate (rtc_ice_candidate_platform.cc) and SDP
++// (rtc_peer_connection_handler.cc) rewrites, so getStats() never disagrees
++// with onicecandidate/localDescription for those.
++String MaybeSpoofStatsAddress(const std::string& input) {
++  const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++  if (!fingerprint::Enabled() ||
++      !cmd.HasSwitch(switches::kFingerprintWebrtcIp)) {
++    return String::FromUTF8(input);
++  }
++  const std::string spoof =
++      cmd.GetSwitchValueNative(switches::kFingerprintWebrtcIp);
++  if (!base::IsStringASCII(spoof) || spoof.empty() || input.empty() ||
++      input == "0.0.0.0" || input == "127.0.0.1") {
++    return String::FromUTF8(input);
++  }
++  return String::FromUTF8(spoof);
+ }
+ 
+ // https://w3c.github.io/webrtc-stats/#icecandidate-dict*
+@@ -490,7 +516,12 @@
+   RTCIceCandidateStats* v8_stat =
+       MakeGarbageCollected<RTCIceCandidateStats>(script_state->GetIsolate());
+   SET_STAT(webrtc_stat.transport_id, v8_stat->setTransportId);
+-  SET_STAT(webrtc_stat.address, v8_stat->setAddress);
++  // fp-patches: address/relatedAddress/ip carry the spoofed IP (see
++  // MaybeSpoofStatsAddress above); ports and every other member are
++  // passed through untouched.
++  if (webrtc_stat.address.has_value()) {
++    v8_stat->setAddress(MaybeSpoofStatsAddress(*webrtc_stat.address));
++  }
+   SET_STAT(webrtc_stat.port, v8_stat->setPort);
+   SET_STAT(webrtc_stat.protocol, v8_stat->setProtocol);
+   SET_STAT_ENUM(webrtc_stat.candidate_type, v8_stat->setCandidateType,
+@@ -500,7 +531,10 @@
+   SET_STAT_ENUM(webrtc_stat.relay_protocol, v8_stat->setRelayProtocol,
+                 V8RTCIceServerTransportProtocol);
+   SET_STAT(webrtc_stat.foundation, v8_stat->setFoundation);
+-  SET_STAT(webrtc_stat.related_address, v8_stat->setRelatedAddress);
++  if (webrtc_stat.related_address.has_value()) {
++    v8_stat->setRelatedAddress(
++        MaybeSpoofStatsAddress(*webrtc_stat.related_address));
++  }
+   SET_STAT(webrtc_stat.related_port, v8_stat->setRelatedPort);
+   SET_STAT(webrtc_stat.username_fragment, v8_stat->setUsernameFragment);
+   SET_STAT_ENUM(webrtc_stat.tcp_type, v8_stat->setTcpType,
+@@ -511,7 +545,9 @@
+                 V8RTCNetworkType);
+   // Non-standard and obsolete stats.
+   SET_STAT(webrtc_stat.is_remote, v8_stat->setIsRemote);
+-  SET_STAT(webrtc_stat.ip, v8_stat->setIp);
++  if (webrtc_stat.ip.has_value()) {
++    v8_stat->setIp(MaybeSpoofStatsAddress(*webrtc_stat.ip));
++  }
+   return v8_stat;
+ }
+ 

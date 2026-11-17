@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 13/33] fingerprint: deterministic measureText() metric scaling
+X-Spec: patches/04-canvas-measuretext-noise.md
+X-Files: third_party/blink/renderer/core/html/canvas/text_metrics.h third_party/blink/renderer/core/html/canvas/text_metrics.cc third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
+
+---
+
+--- a/third_party/blink/renderer/core/html/canvas/text_metrics.h
++++ b/third_party/blink/renderer/core/html/canvas/text_metrics.h
+@@ -94,6 +94,10 @@
+ 
+   const Font* GetFont() const { return font_; }
+ 
++  // fp-patches: scales all reported metrics by a factor near 1.0
++  // (deterministic per identity seed) to defeat text-metric fingerprinting.
++  void Shuffle(const double factor);
++
+   void Trace(Visitor*) const override;
+ 
+   struct RunWithOffset {
+--- a/third_party/blink/renderer/core/html/canvas/text_metrics.cc
++++ b/third_party/blink/renderer/core/html/canvas/text_metrics.cc
+@@ -80,6 +80,29 @@
+ 
+ TextMetrics::TextMetrics() : baselines_(Baselines::Create()) {}
+ 
++void TextMetrics::Shuffle(const double factor) {
++  width_ *= factor;
++  actual_bounding_box_left_ *= factor;
++  actual_bounding_box_right_ *= factor;
++  font_bounding_box_ascent_ *= factor;
++  font_bounding_box_descent_ *= factor;
++  actual_bounding_box_ascent_ *= factor;
++  actual_bounding_box_descent_ *= factor;
++  em_height_ascent_ *= factor;
++  em_height_descent_ *= factor;
++  if (baselines_) {
++    if (baselines_->hasAlphabetic()) {
++      baselines_->setAlphabetic(baselines_->alphabetic() * factor);
++    }
++    if (baselines_->hasHanging()) {
++      baselines_->setHanging(baselines_->hanging() * factor);
++    }
++    if (baselines_->hasIdeographic()) {
++      baselines_->setIdeographic(baselines_->ideographic() * factor);
++    }
++  }
++}
++
+ TextMetrics::TextMetrics(const Font* font,
+                          const TextDirection& direction,
+                          const V8CanvasTextBaseline::Enum baseline,
+--- a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
++++ b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
+@@ -1170,9 +1170,18 @@
+   TextDirection direction =
+       ToTextDirection(state.GetDirection(), host, computed_style);
+ 
+-  return MakeGarbageCollected<TextMetrics>(
++  TextMetrics* text_metrics = MakeGarbageCollected<TextMetrics>(
+       font, direction, state.GetTextBaseline(), state.GetTextAlign(), text,
+       host->GetPlainTextPainter());
++
++  // fp-patches: scale all reported text metrics by a fixed factor near 1.0,
++  // deterministic per identity seed (±0.0005%).
++  if (canvas && fingerprint::NoiseEnabled()) {
++    const double factor =
++        1.0 + (fingerprint::RandomFor("clientrects_noise_x") - 0.5) * 1e-5;
++    text_metrics->Shuffle(factor);
++  }
++  return text_metrics;
+ }
+ 
+ String BaseRenderingContext2D::lang() const {

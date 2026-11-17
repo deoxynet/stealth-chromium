@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 3/33] fingerprint: propagate fingerprint switches to renderer processes
+X-Spec: patches/02-switches-and-propagation.md
+X-Files: content/browser/renderer_host/render_process_host_impl.cc
+
+---
+
+--- a/content/browser/renderer_host/render_process_host_impl.cc
++++ b/content/browser/renderer_host/render_process_host_impl.cc
+@@ -3709,6 +3709,29 @@
+       switches::kEnableWebGLImageChromium,
+       switches::kEnableWebGPUDeveloperFeatures,
+       switches::kFileUrlPathAlias,
++      // fp-patches: identity-seed switches consumed inside the renderer.
++      blink::switches::kFingerprint,
++      blink::switches::kFingerprintBrand,
++      blink::switches::kFingerprintBrandVersion,
++      blink::switches::kFingerprintDeviceMemory,
++      blink::switches::kFingerprintFontsDir,
++      blink::switches::kFingerprintGpuRenderer,
++      blink::switches::kFingerprintGpuVendor,
++      blink::switches::kFingerprintHardwareConcurrency,
++      blink::switches::kFingerprintLocale,
++      blink::switches::kFingerprintLocation,
++      blink::switches::kFingerprintNoise,
++      blink::switches::kFingerprintPlatform,
++      blink::switches::kFingerprintPlatformVersion,
++      blink::switches::kFingerprintScreenHeight,
++      blink::switches::kFingerprintScreenWidth,
++      blink::switches::kFingerprintStorageQuota,
++      blink::switches::kFingerprintTaskbarHeight,
++      blink::switches::kFingerprintTimezone,
++      blink::switches::kFingerprintWebrtcIp,
++      blink::switches::kFingerprintingCanvasImageDataNoise,
++      blink::switches::kFingerprintingCanvasMeasureTextNoise,
++      blink::switches::kFingerprintingClientRectsNoise,
+       switches::kForceDeviceScaleFactor,
+       switches::kForceDisplayColorProfile,
+       switches::kForceHighContrast,

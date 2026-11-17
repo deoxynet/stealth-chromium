@@ -1,0 +1,135 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 9/33] fingerprint: locale override (Accept-Language, navigator.languages, renderer ICU)
+X-Spec: patches/20-locale-accept-language.md
+X-Files: chrome/browser/net/profile_network_context_service.cc chrome/browser/renderer_preferences_util.cc content/renderer/renderer_main.cc third_party/blink/renderer/core/frame/navigator_language.cc
+
+---
+
+--- a/chrome/browser/net/profile_network_context_service.cc
++++ b/chrome/browser/net/profile_network_context_service.cc
+@@ -100,6 +100,7 @@
+ #include "services/network/public/mojom/network_context.mojom.h"
+ #include "services/network/public/mojom/network_service.mojom.h"
+ #include "third_party/blink/public/common/features.h"
++#include "third_party/blink/public/common/switches.h"
+ 
+ #if BUILDFLAG(IS_CHROMEOS)
+ #include "ash/constants/ash_features.h"
+@@ -674,6 +675,18 @@
+   // expanding the language list if the DisableReduceAcceptLanguage deprecation
+   // trial ends.
+ 
++  // fp-patches: persona Accept-Language. Reuses the stock expansion/header
++  // helpers so q-values match a stock browser with that language pref.
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++          blink::switches::kFingerprintLocale)) {
++    const std::string locale =
++        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++            blink::switches::kFingerprintLocale);
++    if (!locale.empty()) {
++      return ComputeAcceptLanguageFromPref(locale);
++    }
++  }
++
+   if (profile_->IsOffTheRecord()) {
+     // In incognito mode return only the first language.
+     return ComputeAcceptLanguageFromPref(
+--- a/chrome/browser/renderer_preferences_util.cc
++++ b/chrome/browser/renderer_preferences_util.cc
+@@ -9,6 +9,7 @@
+ #include <string>
+ #include <vector>
+ 
++#include "base/command_line.h"
+ #include "base/logging.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
+@@ -30,6 +31,7 @@
+ #include "media/media_buildflags.h"
+ #include "third_party/blink/public/common/peerconnection/webrtc_ip_handling_policy.h"
+ #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
++#include "third_party/blink/public/common/switches.h"
+ #include "third_party/blink/public/mojom/peerconnection/webrtc_ip_handling_policy.mojom.h"
+ #include "third_party/blink/public/public_buildflags.h"
+ #include "third_party/skia/include/core/SkColor.h"
+@@ -194,6 +196,17 @@
+       pref_service->GetList(prefs::kWebRtcLocalIpsAllowedUrls));
+   prefs->accept_languages = GetLanguageListForProfile(
+       profile, pref_service->GetString(language::prefs::kAcceptLanguages));
++  // fp-patches: persona accept-languages override what the profile prefs
++  // produced; renderers see this for navigator.language(s) fallback paths.
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++          blink::switches::kFingerprintLocale)) {
++    const std::string locale =
++        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++            blink::switches::kFingerprintLocale);
++    if (!locale.empty()) {
++      prefs->accept_languages = locale;
++    }
++  }
+ #if !BUILDFLAG(IS_MAC)
+   prefs->plugin_fullscreen_allowed =
+       pref_service->GetBoolean(prefs::kFullscreenAllowed);
+--- a/content/renderer/renderer_main.cc
++++ b/content/renderer/renderer_main.cc
+@@ -13,6 +13,7 @@
+ #include "base/debug/debugger.h"
+ #include "base/debug/leak_annotations.h"
+ #include "base/feature_list.h"
++#include "base/i18n/icu_util.h"
+ #include "base/i18n/rtl.h"
+ #include "base/message_loop/message_pump.h"
+ #include "base/message_loop/message_pump_type.h"
+@@ -54,6 +55,7 @@
+ #include "services/tracing/public/cpp/trace_startup.h"
+ #include "skia/ext/font_utils.h"
+ #include "third_party/blink/public/common/features.h"
++#include "third_party/blink/public/common/switches.h"
+ #include "third_party/blink/public/platform/platform.h"
+ #include "third_party/blink/public/platform/scheduler/web_thread_scheduler.h"
+ #include "third_party/skia/include/core/SkFontMgr.h"
+@@ -162,6 +164,21 @@
+ 
+   const base::CommandLine& command_line = *parameters.command_line;
+ 
++  // fp-patches: renderer ICU default locale follows the persona locale so
++  // Intl defaults agree with navigator.languages and Accept-Language. A
++  // comma list uses its first tag (ICU takes a single locale).
++  if (command_line.HasSwitch(blink::switches::kFingerprintLocale)) {
++    std::string locale =
++        command_line.GetSwitchValueASCII(blink::switches::kFingerprintLocale);
++    const size_t comma = locale.find(',');
++    if (comma != std::string::npos) {
++      locale.resize(comma);
++    }
++    if (!locale.empty()) {
++      base::i18n::SetICUDefaultLocale(locale);
++    }
++  }
++
+ #if BUILDFLAG(IS_MAC)
+   base::apple::ScopedNSAutoreleasePool* pool = parameters.autorelease_pool;
+ #endif  // BUILDFLAG(IS_MAC)
+--- a/third_party/blink/renderer/core/frame/navigator_language.cc
++++ b/third_party/blink/renderer/core/frame/navigator_language.cc
+@@ -70,6 +70,18 @@
+ }
+ 
+ void NavigatorLanguage::EnsureUpdatedLanguage() {
++  // fp-patches: persona locale wins over browser-provided accept languages.
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++          blink::switches::kFingerprintLocale)) {
++    const std::string locale =
++        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++            blink::switches::kFingerprintLocale);
++    if (!locale.empty()) {
++      languages_ = ParseAndSanitize(String::FromUTF8(locale));
++      languages_dirty_ = false;
++      return;
++    }
++  }
+   String accept_languages_override;
+   probe::ApplyAcceptLanguageOverride(execution_context_,
+                                      &accept_languages_override);

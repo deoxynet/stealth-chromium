@@ -1,0 +1,188 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 10/33] fingerprint: UA string and UA-CH persona (brand, platform, GREASE lists)
+X-Spec: patches/09-ua-ch-brands-grease.md, patches/10-user-agent-platform.md
+X-Files: components/embedder_support/user_agent_utils.cc
+
+---
+
+--- a/components/embedder_support/user_agent_utils.cc
++++ b/components/embedder_support/user_agent_utils.cc
+@@ -33,6 +33,7 @@
+ #include "components/version_info/version_info.h"
+ #include "net/http/http_util.h"
+ #include "third_party/blink/public/common/features.h"
++#include "third_party/blink/public/common/switches.h"
+ #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
+ 
+ #if BUILDFLAG(IS_WIN)
+@@ -211,6 +212,91 @@
+                                additional_brand_version);
+ }
+ 
++// --- begin fp-patches persona helpers --------------------------------------
++// OS-CPU token reported inside the classic UA parentheses per platform
++// persona. Empty when no persona is active.
++std::string GetFingerprintOsToken() {
++  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
++          blink::switches::kFingerprintPlatform)) {
++    return std::string();
++  }
++  const std::string platform = base::ToLowerASCII(
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          blink::switches::kFingerprintPlatform));
++  if (platform == "windows") {
++    return "Windows NT 10.0; Win64; x64";
++  }
++  if (platform == "macos") {
++    return "Macintosh; Intel Mac OS X 10_15_7";
++  }
++  if (platform == "linux") {
++    return "X11; Linux x86_64";
++  }
++  return std::string();
++}
++
++struct FingerprintBrandPersona {
++  std::string brand;      // display brand for UA-CH brand lists
++  std::string version;    // full version for the brand
++  std::string ua_suffix;  // appended to the classic UA ("" = none)
++};
++
++// Brand persona from --fingerprint-brand / --fingerprint-brand-version.
++// Default (no switch) presents as "Google Chrome". Default per-brand versions
++// mirror a plausible public release of each browser on Chromium 146.
++FingerprintBrandPersona GetFingerprintBrandPersona(
++    const std::string& chromium_full_version) {
++  const base::CommandLine& command_line =
++      *base::CommandLine::ForCurrentProcess();
++  const std::string brand_switch =
++      command_line.HasSwitch(blink::switches::kFingerprintBrand)
++          ? command_line.GetSwitchValueASCII(blink::switches::kFingerprintBrand)
++          : "Chrome";
++  std::string version =
++      command_line.GetSwitchValueASCII(blink::switches::kFingerprintBrandVersion);
++
++  FingerprintBrandPersona persona;
++  if (brand_switch == "Edge") {
++    persona.brand = "Microsoft Edge";
++    persona.ua_suffix = " Edg/";
++    if (version.empty()) {
++      version = "146.0.3856.97";
++    }
++  } else if (brand_switch == "Opera") {
++    persona.brand = "Opera";
++    persona.ua_suffix = " OPR/";
++    if (version.empty()) {
++      version = "129.0.5823.44";
++    }
++  } else if (brand_switch == "Vivaldi") {
++    persona.brand = "Vivaldi";
++    persona.ua_suffix = " Vivaldi/";
++    if (version.empty()) {
++      version = "7.9.3970.47";
++    }
++  } else if (brand_switch == "Chrome" || brand_switch.empty()) {
++    persona.brand = "Google Chrome";
++    if (version.empty()) {
++      version = chromium_full_version;
++    }
++  } else {
++    // Custom brand passes through verbatim.
++    persona.brand = brand_switch;
++    persona.ua_suffix = " " + brand_switch + "/";
++    if (version.empty()) {
++      version = chromium_full_version;
++    }
++  }
++  persona.version = version;
++  return persona;
++}
++
++std::string MajorVersionOf(const std::string& version) {
++  const size_t dot = version.find('.');
++  return dot == std::string::npos ? version : version.substr(0, dot);
++}
++// --- end fp-patches persona helpers ----------------------------------------
++
+ // Internal function to handle return the full or "reduced" user agent string,
+ // depending on the Reduce User-Agent reduction phase features.
+ std::string GetUserAgentInternal() {
+@@ -225,6 +311,19 @@
+   }
+ #endif
+ 
++  // fp-patches: platform persona overrides both the classic and the
++  // unified/reduced UA OS token; a non-Chrome persona appends its brand
++  // token after the Chrome token, like the real browsers do.
++  if (std::string os_token = GetFingerprintOsToken(); !os_token.empty()) {
++    std::string user_agent = BuildUserAgentFromOSAndProduct(os_token, product);
++    FingerprintBrandPersona persona =
++        GetFingerprintBrandPersona(std::string(version_info::GetVersionNumber()));
++    if (!persona.ua_suffix.empty()) {
++      user_agent.append(persona.ua_suffix).append(persona.version);
++    }
++    return user_agent;
++  }
++
+   return ShouldSendUserAgentUnifiedPlatform()
+              ? BuildUnifiedPlatformUserAgentFromProduct(product)
+              : BuildUserAgentFromProduct(product);
+@@ -671,6 +770,56 @@
+   metadata.bitness = GetCpuBitness();
+   metadata.wow64 = IsWoW64();
+   metadata.platform_version = GetPlatformVersion();
++
++  // fp-patches: persona brand lists and platform fields. Brand lists keep
++  // the real Chromium entry plus GREASE, shuffled with the stock permutation
++  // seeded by the Chromium major version (matches stock Chrome formatting).
++  // full_version/model/mobile/bitness/wow64 keep their stock values.
++  {
++    const std::string chromium_full(version_info::GetVersionNumber());
++    const int seed = version_info::GetMajorVersionNumber();
++    FingerprintBrandPersona persona = GetFingerprintBrandPersona(chromium_full);
++
++    blink::UserAgentBrandList full_list = {
++        GetGreasedUserAgentBrandVersion(
++            seed, blink::UserAgentBrandVersionType::kFullVersion),
++        {persona.brand, persona.version},
++        {"Chromium", chromium_full}};
++    blink::UserAgentBrandList major_list = {
++        GetGreasedUserAgentBrandVersion(
++            seed, blink::UserAgentBrandVersionType::kMajorVersion),
++        {persona.brand, MajorVersionOf(persona.version)},
++        {"Chromium", MajorVersionOf(chromium_full)}};
++    metadata.brand_full_version_list =
++        ShuffleBrandList(std::move(full_list), seed);
++    metadata.brand_version_list = ShuffleBrandList(std::move(major_list), seed);
++
++    const base::CommandLine& command_line =
++        *base::CommandLine::ForCurrentProcess();
++    if (command_line.HasSwitch(blink::switches::kFingerprintPlatform)) {
++      const std::string platform = base::ToLowerASCII(
++          command_line.GetSwitchValueASCII(blink::switches::kFingerprintPlatform));
++      if (platform == "windows") {
++        metadata.platform = "Windows";
++        metadata.platform_version = "19.0.0";
++      } else if (platform == "linux") {
++        metadata.platform = "Linux";
++        metadata.platform_version = "6.11.0";
++      } else if (platform == "macos") {
++        metadata.platform = "macOS";
++        metadata.platform_version = "15.2.0";
++        metadata.architecture = "arm";
++      } else {
++        metadata.platform = platform;
++      }
++      const std::string platform_version =
++          command_line.GetSwitchValueASCII(
++              blink::switches::kFingerprintPlatformVersion);
++      if (!platform_version.empty()) {
++        metadata.platform_version = platform_version;
++      }
++    }
++  }
+   return metadata;
+ }
+ 

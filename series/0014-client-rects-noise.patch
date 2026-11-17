@@ -1,0 +1,168 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 14/33] fingerprint: get*ClientRects/offsetWidth/Height seeded noise
+X-Spec: patches/05-client-rects-noise.md
+X-Files: third_party/blink/renderer/core/fingerprint/client_rects_noise.h third_party/blink/renderer/core/dom/range.cc third_party/blink/renderer/core/dom/element.cc third_party/blink/renderer/core/html/html_element.cc
+
+---
+
+--- /dev/null
++++ b/third_party/blink/renderer/core/fingerprint/client_rects_noise.h
+@@ -0,0 +1,36 @@
++// Copyright 2026 The fp-patches Authors
++// Use of this source code is governed by a GPLv3 license that can be
++// found in the LICENSE file of the fp-patches distribution.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_CLIENT_RECTS_NOISE_H_
++#define THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_CLIENT_RECTS_NOISE_H_
++
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
++
++// Sub-pixel translation applied to get*ClientRects / getBoundingClientRect
++// results. The offset is one of ±1/64..±4/64 px per axis (never zero),
++// deterministic per identity seed, identical for every document in a
++// session. Widths/heights are never altered — only origins move.
++namespace blink::fingerprint {
++
++inline double ClientRectsNoiseX() {
++  static const double noise = [] {
++    const uint32_t v =
++        static_cast<uint32_t>(HashFor("offset_x")) & 7;
++    return static_cast<double>(v + (v >= 4 ? 1 : 0) - 4) * 0.015625;
++  }();
++  return noise;
++}
++
++inline double ClientRectsNoiseY() {
++  static const double noise = [] {
++    const uint32_t v =
++        static_cast<uint32_t>(HashFor("offset_y")) & 7;
++    return static_cast<double>(v + (v >= 4 ? 1 : 0) - 4) * 0.015625;
++  }();
++  return noise;
++}
++
++}  // namespace blink::fingerprint
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_CLIENT_RECTS_NOISE_H_
+--- a/third_party/blink/renderer/core/dom/range.cc
++++ b/third_party/blink/renderer/core/dom/range.cc
+@@ -46,6 +46,7 @@
+ #include "third_party/blink/renderer/core/editing/set_selection_options.h"
+ #include "third_party/blink/renderer/core/editing/visible_position.h"
+ #include "third_party/blink/renderer/core/editing/visible_units.h"
++#include "third_party/blink/renderer/core/fingerprint/client_rects_noise.h"
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/core/frame/settings.h"
+@@ -1656,6 +1657,16 @@
+   Vector<gfx::QuadF> quads;
+   GetBorderAndTextQuads(quads);
+ 
++  // fp-patches: translate quads by the seeded sub-pixel offset (pure
++  // translation; sizes unchanged).
++  if (fingerprint::NoiseEnabled()) {
++    const float dx = static_cast<float>(fingerprint::ClientRectsNoiseX());
++    const float dy = static_cast<float>(fingerprint::ClientRectsNoiseY());
++    for (gfx::QuadF& quad : quads) {
++      quad.Offset(dx, dy);
++    }
++  }
++
+   return MakeGarbageCollected<DOMRectList>(quads);
+ }
+ 
+@@ -1663,7 +1674,13 @@
+   // TODO(crbug.com/1499981): This should be removed once synchronized scrolling
+   // impact is understood.
+   SyncScrollAttemptHeuristic::DidAccessScrollOffset();
+-  return DOMRect::FromRectF(BoundingRect());
++  gfx::RectF rect = BoundingRect();
++  // fp-patches: seeded sub-pixel origin translation.
++  if (fingerprint::NoiseEnabled()) {
++    rect.set_x(rect.x() + static_cast<float>(fingerprint::ClientRectsNoiseX()));
++    rect.set_y(rect.y() + static_cast<float>(fingerprint::ClientRectsNoiseY()));
++  }
++  return DOMRect::FromRectF(rect);
+ }
+ 
+ // TODO(editing-dev): We should make
+--- a/third_party/blink/renderer/core/dom/element.cc
++++ b/third_party/blink/renderer/core/dom/element.cc
+@@ -164,6 +164,7 @@
+ #include "third_party/blink/renderer/core/events/keyboard_event.h"
+ #include "third_party/blink/renderer/core/execution_context/agent.h"
+ #include "third_party/blink/renderer/core/execution_context/security_context.h"
++#include "third_party/blink/renderer/core/fingerprint/client_rects_noise.h"
+ #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+@@ -3442,6 +3443,14 @@
+   if (quads.empty()) {
+     return {};
+   }
++  // fp-patches: translate quads by the seeded sub-pixel offset.
++  if (fingerprint::NoiseEnabled()) {
++    const float dx = static_cast<float>(fingerprint::ClientRectsNoiseX());
++    const float dy = static_cast<float>(fingerprint::ClientRectsNoiseY());
++    for (gfx::QuadF& quad : quads) {
++      quad.Offset(dx, dy);
++    }
++  }
+   Vector<gfx::RectF> result;
+   for (auto& quad : quads) {
+     result.emplace_back(quad.BoundingBox());
+@@ -3473,6 +3482,12 @@
+   DCHECK(element_layout_object);
+   GetDocument().AdjustRectForScrollAndAbsoluteZoom(result,
+                                                    *element_layout_object);
++  // fp-patches: seeded sub-pixel origin translation after scroll/zoom
++  // adjustment.
++  if (fingerprint::NoiseEnabled()) {
++    result.set_x(result.x() + static_cast<float>(fingerprint::ClientRectsNoiseX()));
++    result.set_y(result.y() + static_cast<float>(fingerprint::ClientRectsNoiseY()));
++  }
+   return result;
+ }
+ 
+--- a/third_party/blink/renderer/core/html/html_element.cc
++++ b/third_party/blink/renderer/core/html/html_element.cc
+@@ -23,6 +23,7 @@
+  *
+  */
+ 
++#include "third_party/blink/renderer/core/fingerprint/client_rects_noise.h"
+ #include "third_party/blink/renderer/core/html/html_element.h"
+ 
+ #include <iterator>
+@@ -3558,6 +3559,14 @@
+   if (const auto* layout_object = GetLayoutBoxModelObject()) {
+     result = AdjustedOffsetForZoom(layout_object->OffsetWidth());
+   }
++  // fp-patches: deterministic integer noise for large-enough values;
++  // offset in [-30, +50] px keyed to (seed, element id).
++  if (result >= 51 && fingerprint::NoiseEnabled()) {
++    const std::string hash_input = fingerprint::SeedString() + "|offsetWidth|" +
++                                   GetIdAttribute().Utf8();
++    const uint32_t h = static_cast<uint32_t>(fingerprint::Hash(hash_input));
++    result += static_cast<int>(h % 81u) - 30;
++  }
+   return result;
+ }
+ 
+@@ -3569,6 +3578,14 @@
+   if (const auto* layout_object = GetLayoutBoxModelObject()) {
+     result = AdjustedOffsetForZoom(layout_object->OffsetHeight());
+   }
++  // fp-patches: see offsetWidthForBinding.
++  if (result >= 51 && fingerprint::NoiseEnabled()) {
++    const std::string hash_input = fingerprint::SeedString() +
++                                   "|offsetHeight|" +
++                                   GetIdAttribute().Utf8();
++    const uint32_t h = static_cast<uint32_t>(fingerprint::Hash(hash_input));
++    result += static_cast<int>(h % 81u) - 30;
++  }
+   return result;
+ }
+ 

@@ -1,0 +1,197 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 37] bromite-lineage: --max-connections-per-host switch + about:flags entry
+X-Spec: patches/40-carried-base-patches.md
+X-Files: components/network_session_configurator/common/network_switch_list.h chrome/browser/browser_process_impl.cc chrome/browser/BUILD.gn chrome/browser/about_flags.cc chrome/browser/flag_descriptions.h
+
+---
+
+--- a/components/network_session_configurator/common/network_switch_list.h
++++ b/components/network_session_configurator/common/network_switch_list.h
+@@ -19,6 +19,10 @@
+ // Enables the QUIC protocol.  This is a temporary testing flag.
+ NETWORK_SWITCH(kEnableQuic, "enable-quic")
+ 
++// fp-patches (Bromite lineage): allows specifying a higher number of
++// maximum connections per host (15 instead of 6, mirroring Mozilla).
++NETWORK_SWITCH(kMaxConnectionsPerHost, "max-connections-per-host")
++
+ // Ignores certificate-related errors.
+ // Note: In tests using net::EmbeddedTestServer with a custom hostname not
+ // covered by the default test certs, using this switch is usually incorrect.
+--- a/chrome/browser/browser_process_impl.cc
++++ b/chrome/browser/browser_process_impl.cc
+@@ -22,6 +22,7 @@
+ #include "base/functional/callback.h"
+ #include "base/functional/callback_helpers.h"
+ #include "base/location.h"
++#include "base/logging.h"
+ #include "base/memory/ptr_util.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "base/metrics/histogram_macros.h"
+@@ -29,6 +30,7 @@
+ #include "base/notreached.h"
+ #include "base/path_service.h"
+ #include "base/run_loop.h"
++#include "base/strings/string_number_conversions.h"
+ #include "base/synchronization/waitable_event.h"
+ #include "base/task/sequenced_task_runner.h"
+ #include "base/task/single_thread_task_runner.h"
+@@ -119,6 +121,7 @@
+ #include "components/metrics/metrics_service.h"
+ #include "components/metrics_services_manager/metrics_services_manager.h"
+ #include "components/metrics_services_manager/metrics_services_manager_client.h"
++#include "components/network_session_configurator/common/network_switches.h"
+ #include "components/network_time/network_time_tracker.h"
+ #include "components/os_crypt/async/browser/os_crypt_async.h"
+ #include "components/permissions/permissions_client.h"
+@@ -156,6 +159,7 @@
+ #include "extensions/common/constants.h"
+ #include "media/media_buildflags.h"
+ #include "mojo/public/cpp/bindings/pending_receiver.h"
++#include "net/socket/client_socket_pool_manager.h"
+ #include "printing/buildflags/buildflags.h"
+ #include "services/network/public/cpp/features.h"
+ #include "services/network/public/cpp/network_switches.h"
+@@ -471,6 +475,26 @@
+   // whenever the preference or its controlling policy changes.
+   pref_change_registrar_.Add(metrics::prefs::kMetricsReportingEnabled,
+                              base::BindRepeating(&ApplyMetricsReportingPolicy));
++
++  // fp-patches (Bromite lineage): --max-connections-per-host overrides the
++  // hardcoded HTTP/1.1 per-host pool limit (stock: 6).
++  int max_connections_per_host = 0;
++  const std::string connections_switch_value =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          switches::kMaxConnectionsPerHost);
++  if (!connections_switch_value.empty() &&
++      !base::StringToInt(connections_switch_value,
++                         &max_connections_per_host)) {
++    LOG(DFATAL) << "--" << switches::kMaxConnectionsPerHost
++                << " expected integer; got "" << connections_switch_value
++                << """;
++    max_connections_per_host = 0;
++  }
++  if (max_connections_per_host > 0) {
++    net::ClientSocketPoolManager::set_max_sockets_per_group_for_test(
++        net::HttpNetworkSession::SocketPoolType::kNormal,
++        static_cast<size_t>(max_connections_per_host));
++  }
+ 
+   DCHECK(!webrtc_event_log_manager_);
+   webrtc_event_log_manager_ = WebRtcEventLogManager::CreateSingletonInstance();
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -2219,6 +2219,7 @@
+     "//components/net_log",
+     "//components/network_hints/common:mojo_bindings",
+     "//components/network_session_configurator/browser",
++    "//components/network_session_configurator/common",
+     "//components/network_time",
+     "//components/network_time/time_tracker",
+     "//components/no_state_prefetch/browser",
+--- a/chrome/browser/about_flags.cc
++++ b/chrome/browser/about_flags.cc
+@@ -418,48 +418,16 @@
+     {flag_descriptions::kPullToRefreshEnabledTouchscreen,
+      switches::kPullToRefresh, "2"}};
+ #endif  // USE_AURA
++
++const FeatureEntry::Choice kMaxConnectionsPerHostChoices[] = {
++    {flags_ui::kGenericExperimentChoiceDefault, "", ""},
++    {"15", switches::kMaxConnectionsPerHost, "15"}};
+ 
+ const FeatureEntry::FeatureParam kLocalNetworkAccessChecksBlock[] = {
+     {"LocalNetworkAccessChecksWarn", "false"}};
+ const FeatureEntry::FeatureVariation kLocalNetworkAccessChecksVariations[] = {
+     {"(Blocking)", kLocalNetworkAccessChecksBlock, nullptr}};
+ 
+-// fp-patches: vendor/renderer presets for the "Spoof WebGL Info" flag
+-// (ungoogled-chromium lineage). Note the param defaults in
+-// third_party/blink/common/features.cc are a single space, so enabling the
+-// feature without a preset yields the blank behavior rather than the real
+-// GPU strings.
+-const FeatureEntry::FeatureParam kSpoofWebGL_Blank[] = {
+-    {"renderer", " "},
+-    {"vendor", " "}};
+-const FeatureEntry::FeatureParam kSpoofWebGL_Amd[] = {
+-    {"renderer", "Radeon R9 200 Series, or similar"},
+-    {"vendor", "AMD"}};
+-const FeatureEntry::FeatureParam kSpoofWebGL_Apple[] = {
+-    {"renderer", "Apple GPU"},
+-    {"vendor", "Apple Inc."}};
+-const FeatureEntry::FeatureParam kSpoofWebGL_Intel[] = {
+-    {"renderer", "Intel(R) HD Graphics, or similar"},
+-    {"vendor", "Intel"}};
+-const FeatureEntry::FeatureParam kSpoofWebGL_Mesa[] = {
+-    {"renderer", "llvmpipe"},
+-    {"vendor", "Mesa"}};
+-const FeatureEntry::FeatureParam kSpoofWebGL_Nvidia[] = {
+-    {"renderer", "NVIDIA GeForce GTX 980, or similar"},
+-    {"vendor", "NVIDIA Corporation"}};
+-const FeatureEntry::FeatureParam kSpoofWebGL_Qualcomm[] = {
+-    {"renderer", "Adreno (TM) 610"},
+-    {"vendor", "Qualcomm"}};
+-
+-const FeatureEntry::FeatureVariation kSpoofWebGLChoices[] = {
+-    {"Blank", kSpoofWebGL_Blank, nullptr},
+-    {"AMD Radeon R9 200", kSpoofWebGL_Amd, nullptr},
+-    {"Apple", kSpoofWebGL_Apple, nullptr},
+-    {"Intel", kSpoofWebGL_Intel, nullptr},
+-    {"Mesa LLVMpipe", kSpoofWebGL_Mesa, nullptr},
+-    {"NVIDIA GeForce GTX 980", kSpoofWebGL_Nvidia, nullptr},
+-    {"Qualcomm Adreno 610", kSpoofWebGL_Qualcomm, nullptr}};
+-
+ const FeatureEntry::Choice kEnableBenchmarkingChoices[] = {
+     {flag_descriptions::kEnableBenchmarkingChoiceDisabled, "", ""},
+     {flag_descriptions::kEnableBenchmarkingChoiceDefaultFeatureStates,
+@@ -12952,15 +12920,10 @@
+      flag_descriptions::kWebMCPTestingDescription, kOsAll,
+      FEATURE_VALUE_TYPE(blink::features::kWebMCPTesting)},
+ 
+-    // fp-patches: "Spoof WebGL Info" (ungoogled-chromium lineage). The
+-    // presets feed the kSpoofWebGLInfo feature params consumed by the
+-    // UNMASKED_{VENDOR,RENDERER}_WEBGL fallback in
+-    // WebGLRenderingContextBase::getParameter().
+-    {"spoof-webgl-info", flag_descriptions::kSpoofWebglInfoName,
+-     flag_descriptions::kSpoofWebglInfoDescription, kOsAll,
+-     FEATURE_WITH_PARAMS_VALUE_TYPE(blink::features::kSpoofWebGLInfo,
+-                                    kSpoofWebGLChoices,
+-                                    "SpoofWebGLInfo")},
++    {"max-connections-per-host",
++     flag_descriptions::kMaxConnectionsPerHostName,
++     flag_descriptions::kMaxConnectionsPerHostDescription, kOsAll,
++     MULTI_VALUE_TYPE(kMaxConnectionsPerHostChoices)},
+ 
+     // Add new entries above this line.
+     // NOTE: Adding a new flag requires adding a corresponding entry to enum
+--- a/chrome/browser/flag_descriptions.h
++++ b/chrome/browser/flag_descriptions.h
+@@ -2769,6 +2769,12 @@
+ inline constexpr char kLogJsConsoleMessagesDescription[] =
+     "Enable logging JS console messages in system logs, please note that they "
+     "may contain PII.";
++
++inline constexpr char kMaxConnectionsPerHostName[] =
++    "Maximum connections per host";
++inline constexpr char kMaxConnectionsPerHostDescription[] =
++    "Customize maximum allowed connections per host. ungoogled-chromium "
++    "flag, Bromite feature.";
+ 
+ inline constexpr char kMediaRouterCastAllowAllIPsName[] =
+     "Connect to Cast devices on all IP addresses";
+@@ -3926,13 +3932,6 @@
+     "Visualize overdraw by color-coding elements based on if they have other "
+     "elements drawn underneath.";
+ 
+-// fp-patches: "Spoof WebGL Info" (ungoogled-chromium lineage).
+-inline constexpr char kSpoofWebglInfoName[] = "Spoof WebGL Info";
+-inline constexpr char kSpoofWebglInfoDescription[] =
+-    "Return generic values for WebGLDebugRendererInfo to remove a potential "
+-    "data leak while preventing potential website breakage. ungoogled-chromium "
+-    "flag.";
+-
+ inline constexpr char kAccessibilityOnScreenModeName[] =
+     "On-Screen Only Accessibility Nodes";
+ inline constexpr char kAccessibilityOnScreenModeDescription[] =

@@ -1,0 +1,433 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 32] fingerprint: WebGPU adapter persona + canvas format consistency
+X-Spec: patches/16-webgpu-fingerprint.md, patches/37-webgpu-canvas-format-consistency.md
+X-Files: third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h third_party/blink/renderer/modules/webgpu/gpu_adapter.cc third_party/blink/renderer/modules/webgpu/gpu.cc
+
+---
+
+--- /dev/null
++++ b/third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h
+@@ -0,0 +1,287 @@
++// Copyright 2026 The fp-patches Authors
++// Use of this source code is governed by a GPLv3 license that can be
++// found in the LICENSE file of the fp-patches distribution.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGPU_WEBGPU_FINGERPRINT_H_
++#define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGPU_WEBGPU_FINGERPRINT_H_
++
++// fp-patches: WebGPU adapter persona (spec patches/16-webgpu-fingerprint.md).
++//
++// Identity-seed-driven GPUAdapter spoofing. While fingerprinting is active
++// the adapter reports the persona vendor/architecture/device (Apple on the
++// macOS persona, an NVIDIA model from the embedded database otherwise), the
++// advertised feature set is filtered through a plausibility allowlist, and
++// the advertised limits are clamped to the persona table below. Without
++// --fingerprint every getter reports "no spoof" and callers keep the real
++// adapter values (feature filtering is the one unconditional piece, matching
++// the vendor build).
++//
++// The NVIDIA model selection mirrors modules/webgl/gpu_fingerprint.cc
++// (patch 0016): same database order, same seed salt ("gpu_renderer"), same
++// first-match substring lookup for --fingerprint-gpu-renderer. The two
++// tables MUST stay in sync so WebGL UNMASKED_RENDERER_WEBGL and the WebGPU
++// adapter info can never disagree for a given identity.
++
++#include <algorithm>
++#include <cstdint>
++#include <optional>
++#include <string>
++
++#include "base/command_line.h"
++#include "base/strings/string_util.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
++#include "third_party/blink/public/common/switches.h"
++#include "third_party/blink/renderer/modules/webgpu/gpu_supported_limits.h"
++#include "third_party/blink/renderer/platform/graphics/gpu/webgpu_cpp.h"
++
++namespace blink {
++
++namespace webgpu_fingerprint {
++
++// fp-patches: NVIDIA models with real PCI device IDs. Order mirrors
++// kNvidiaGpuModels in modules/webgl/gpu_fingerprint.cc (ungoogled-chromium
++// table lineage); the index is shared with the WebGL persona, do not
++// reorder. (name, PCI device id)
++struct NvidiaGpuModel {
++  const char* name;
++  uint32_t device_id;
++};
++
++inline constexpr NvidiaGpuModel kNvidiaGpuModels[] = {
++    {"GeForce RTX 3050", 0x2507},
++    {"GeForce RTX 3050", 0x2582},
++    {"GeForce RTX 3050 6GB Laptop GPU", 0x25EC},
++    {"GeForce RTX 3050 Laptop GPU", 0x25A2},
++    {"GeForce RTX 3050 Ti Laptop GPU", 0x25A0},
++    {"GeForce RTX 3060", 0x2487},
++    {"GeForce RTX 3060", 0x2503},
++    {"GeForce RTX 3060", 0x2504},
++    {"GeForce RTX 3060 Laptop GPU", 0x2520},
++    {"GeForce RTX 3060 Laptop GPU", 0x2560},
++    {"GeForce RTX 3060 Ti", 0x2486},
++    {"GeForce RTX 3060 Ti", 0x2489},
++    {"GeForce RTX 3060 Ti", 0x24C9},
++    {"GeForce RTX 3070", 0x2484},
++    {"GeForce RTX 3070", 0x2488},
++    {"GeForce RTX 3070 Ti", 0x2482},
++    {"GeForce RTX 3070 Ti Laptop GPU", 0x24A0},
++    {"GeForce RTX 3080", 0x2206},
++    {"GeForce RTX 3080", 0x220A},
++    {"GeForce RTX 3080", 0x2216},
++    {"GeForce RTX 3080 Laptop GPU", 0x249C},
++    {"GeForce RTX 3080 Laptop GPU", 0x24DC},
++    {"GeForce RTX 3080 Ti", 0x2208},
++    {"GeForce RTX 3080 Ti Laptop GPU", 0x2420},
++    {"GeForce RTX 3080 Ti Laptop GPU", 0x2460},
++    {"GeForce RTX 3090", 0x2204},
++    {"GeForce RTX 3090 Ti", 0x2203},
++    {"GeForce RTX 4050 Laptop GPU", 0x28A1},
++    {"GeForce RTX 4050 Laptop GPU", 0x28E1},
++    {"GeForce RTX 4060", 0x2882},
++    {"GeForce RTX 4060 Laptop GPU", 0x28A0},
++    {"GeForce RTX 4060 Laptop GPU", 0x28E0},
++    {"GeForce RTX 4060 Ti", 0x2803},
++    {"GeForce RTX 4060 Ti", 0x2805},
++    {"GeForce RTX 4070", 0x2786},
++    {"GeForce RTX 4070 Laptop GPU", 0x2820},
++    {"GeForce RTX 4070 Laptop GPU", 0x2860},
++    {"GeForce RTX 4070 SUPER", 0x2783},
++    {"GeForce RTX 4070 Ti", 0x2782},
++    {"GeForce RTX 4070 Ti SUPER", 0x2705},
++    {"GeForce RTX 4080", 0x2704},
++    {"GeForce RTX 4080 Laptop GPU", 0x27A0},
++    {"GeForce RTX 4080 Laptop GPU", 0x27E0},
++    {"GeForce RTX 4080 SUPER", 0x2702},
++    {"GeForce RTX 4090", 0x2684},
++    {"GeForce RTX 4090 Laptop GPU", 0x2717},
++    {"GeForce RTX 4090 Laptop GPU", 0x2757},
++    {"GeForce RTX 5070", 0x2F04},
++    {"GeForce RTX 5070 Ti", 0x2C05},
++    {"GeForce RTX 5070 Ti Laptop GPU", 0x2F18},
++    {"GeForce RTX 5070 Ti Laptop GPU", 0x2F58},
++    {"GeForce RTX 5080", 0x2C02},
++    {"GeForce RTX 5080 Laptop GPU", 0x2C19},
++    {"GeForce RTX 5080 Laptop GPU", 0x2C59},
++    {"GeForce RTX 5090", 0x2B85},
++    {"GeForce RTX 5090 Laptop GPU", 0x2C18},
++    {"GeForce RTX 5090 Laptop GPU", 0x2C58},
++};
++
++inline constexpr size_t kNvidiaGpuModelCount =
++    sizeof(kNvidiaGpuModels) / sizeof(kNvidiaGpuModels[0]);
++
++// Lowercased --fingerprint-platform, default "linux" when absent (vendor
++// build resolved the platform locally in the webgpu TU; default pool is
++// NVIDIA).
++inline std::string ResolvePlatform() {
++  const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++  if (cmd.HasSwitch(switches::kFingerprintPlatform)) {
++    const std::string value =
++        cmd.GetSwitchValueASCII(switches::kFingerprintPlatform);
++    if (base::IsStringASCII(value)) {
++      return base::ToLowerASCII(value);
++    }
++  }
++  return "linux";
++}
++
++// Index into kNvidiaGpuModels: an explicit --fingerprint-gpu-renderer whose
++// value contains a model name selects that model (first match wins, same
++// iteration order as the WebGL persona); otherwise the identity seed hashes
++// to a stable index. nullopt = no persona model (custom renderer string).
++inline std::optional<size_t> ResolveNvidiaModelIndex() {
++  const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++  if (cmd.HasSwitch(switches::kFingerprintGpuRenderer)) {
++    const std::string value =
++        cmd.GetSwitchValueASCII(switches::kFingerprintGpuRenderer);
++    if (!base::IsStringASCII(value)) {
++      return std::nullopt;
++    }
++    for (size_t i = 0; i < kNvidiaGpuModelCount; ++i) {
++      if (value.find(kNvidiaGpuModels[i].name) != std::string::npos) {
++        return i;
++      }
++    }
++    return std::nullopt;
++  }
++  const uint32_t hash =
++      static_cast<uint32_t>(fingerprint::HashFor("gpu_renderer"));
++  return hash % kNvidiaGpuModelCount;
++}
++
++// Persona vendor: "" = no spoof (fingerprinting off), else "apple" on the
++// macOS persona and "nvidia" everywhere else.
++inline std::string GetVendor() {
++  if (!fingerprint::Enabled()) {
++    return std::string();
++  }
++  return ResolvePlatform() == "macos" ? "apple" : "nvidia";
++}
++
++// Persona architecture: NVIDIA generation name derived from the PCI device
++// id bucket (16-entry vendor-observed table, verbatim including the
++// 0x21xx/0x23xx/0x2Exx "lovelace" quirks), or the Apple Metal family name.
++inline std::string GetArchitecture() {
++  if (!fingerprint::Enabled()) {
++    return std::string();
++  }
++  if (ResolvePlatform() == "macos") {
++    return "common-3";
++  }
++  const std::optional<size_t> index = ResolveNvidiaModelIndex();
++  if (!index) {
++    return std::string();
++  }
++  // fp-patches: vendor-observed bucket table, indexed by (id - 0x2000) >> 8.
++  static constexpr const char* kArchitectureByBucket[16] = {
++      "ampere",    "lovelace",   // 0x20xx, 0x21xx
++      "ampere",    "lovelace",   // 0x22xx, 0x23xx
++      "ampere",    "ampere",     // 0x24xx, 0x25xx
++      "lovelace",  "lovelace",   // 0x26xx, 0x27xx
++      "lovelace",  "lovelace",   // 0x28xx, 0x29xx
++      "lovelace",  "blackwell",  // 0x2axx, 0x2bxx
++      "blackwell", "blackwell",  // 0x2cxx, 0x2dxx
++      "lovelace",  "blackwell",  // 0x2exx, 0x2fxx
++  };
++  const uint32_t v = kNvidiaGpuModels[*index].device_id - 0x2000;
++  if (v > 0xFFF) {
++    return "lovelace";
++  }
++  return kArchitectureByBucket[v >> 8];
++}
++
++// Persona raw PCI device id (0 = keep the real adapter device string; the
++// macOS persona never spoofs it).
++inline uint32_t GetRawDeviceId() {
++  if (!fingerprint::Enabled()) {
++    return 0;
++  }
++  if (ResolvePlatform() == "macos") {
++    return 0;
++  }
++  const std::optional<size_t> index = ResolveNvidiaModelIndex();
++  if (!index) {
++    return 0;
++  }
++  return kNvidiaGpuModels[*index].device_id;
++}
++
++// Feature plausibility allowlist (vendor-observed bitmask logic, verbatim).
++// Runs UNCONDITIONALLY — it strips implausible/experimental features (e.g.
++// desktop BC compression for the macOS persona, chromium-experimental-*
++// dawn extensions) even when no fingerprint seed is set.
++//
++// Masks over the wgpu::FeatureName numeric values (dawn.json order):
++//   f in 1..15 and bit (f-1) of 0x7B0F: core set every persona may report;
++//   macOS persona additionally allows f in 6..8 (ETC2/ASTC compression);
++//   other personas additionally allow bit f of 0x7F0820 for f <= 0x16
++//   (bc-sliced-3d, shader-f16, clip-distances .. component-swizzle).
++inline bool IsPlausibleFeature(wgpu::FeatureName f) {
++  const uint32_t v = static_cast<uint32_t>(f);
++  if (v >= 1 && v <= 15 && ((0x7B0Fu >> (v - 1)) & 1) != 0) {
++    return true;
++  }
++  if (ResolvePlatform() == "macos") {
++    return v >= 6 && v <= 8;
++  }
++  if (v <= 0x16) {
++    return ((0x7F0820u >> v) & 1) != 0;
++  }
++  return false;
++}
++
++// fp-patches: persona limits (vendor-observed stores/clamps; the exact
++// value table from the disassembly, applied by field name). Overwrites set
++// the persona value; std::min entries clamp the real value down. Only
++// applied while fingerprinting is active, so real limits stay stock.
++inline void ClampLimits(GPUSupportedLimits::ComboLimits& l) {
++  l.maxTextureDimension1D = 0x4000;
++  l.maxTextureDimension2D = 0x4000;
++  l.maxTextureDimension3D = std::min(l.maxTextureDimension3D, 0x800u);
++  l.maxTextureArrayLayers = 0x800;
++  l.maxBindGroups = std::min(l.maxBindGroups, 4u);
++  l.maxBindGroupsPlusVertexBuffers =
++      std::min(l.maxBindGroupsPlusVertexBuffers, 24u);
++  l.maxBindingsPerBindGroup = std::min(l.maxBindingsPerBindGroup, 1000u);
++  l.maxDynamicUniformBuffersPerPipelineLayout = 10;
++  l.maxDynamicStorageBuffersPerPipelineLayout = 8;
++  l.maxSampledTexturesPerShaderStage = 48;
++  l.maxSamplersPerShaderStage = std::min(l.maxSamplersPerShaderStage, 16u);
++  l.maxStorageBuffersPerShaderStage = 16;
++  l.maxStorageTexturesPerShaderStage = 8;
++  l.maxUniformBuffersPerShaderStage =
++      std::min(l.maxUniformBuffersPerShaderStage, 12u);
++  l.maxUniformBufferBindingSize =
++      std::min<uint64_t>(l.maxUniformBufferBindingSize, 0x10000ull);
++  l.maxStorageBufferBindingSize = 0x7FFFFFFC;
++  l.minUniformBufferOffsetAlignment =
++      std::min(l.minUniformBufferOffsetAlignment, 0x100u);
++  l.minStorageBufferOffsetAlignment =
++      std::min(l.minStorageBufferOffsetAlignment, 0x100u);
++  l.maxVertexBuffers = std::min(l.maxVertexBuffers, 8u);
++  l.maxBufferSize = 0x80000000ull;
++  l.maxVertexAttributes = 30;
++  l.maxVertexBufferArrayStride =
++      std::min(l.maxVertexBufferArrayStride, 0x800u);
++  l.maxInterStageShaderVariables = 28;
++  l.maxColorAttachments = std::min(l.maxColorAttachments, 8u);
++  l.maxColorAttachmentBytesPerSample = 0x80;
++  l.maxComputeWorkgroupStorageSize = 0x8000;
++  l.maxComputeInvocationsPerWorkgroup = 0x400;
++  l.maxComputeWorkgroupSizeX = 0x400;
++  l.maxComputeWorkgroupSizeY = 0x400;
++  l.maxComputeWorkgroupSizeZ = std::min(l.maxComputeWorkgroupSizeZ, 0x40u);
++  l.maxComputeWorkgroupsPerDimension =
++      std::min(l.maxComputeWorkgroupsPerDimension, 0xFFFFu);
++  l.maxImmediateSize = 0;
++  l.maxStorageBuffersInVertexStage = 16;
++  l.maxStorageTexturesInVertexStage = 8;
++  l.maxStorageBuffersInFragmentStage = 16;
++  l.maxStorageTexturesInFragmentStage = 8;
++}
++
++}  // namespace webgpu_fingerprint
++
++}  // namespace blink
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGPU_WEBGPU_FINGERPRINT_H_
+--- a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
++++ b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
+@@ -22,6 +22,7 @@
+ #include "third_party/blink/renderer/modules/webgpu/gpu_supported_features.h"
+ #include "third_party/blink/renderer/modules/webgpu/gpu_supported_limits.h"
+ #include "third_party/blink/renderer/modules/webgpu/string_utils.h"
++#include "third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h"
+ #include "third_party/blink/renderer/platform/graphics/gpu/webgpu_callback.h"
+ #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+@@ -40,12 +41,35 @@
+   const auto features_span = UNSAFE_BUFFERS(base::span<const wgpu::FeatureName>(
+       supported_features.features, supported_features.featureCount));
+   for (const auto& f : features_span) {
++    // fp-patches: keep only features the persona could plausibly report
++    // (allowlist; runs unconditionally, vendor-observed) that are also
++    // representable in the JS enum.
++    if (!webgpu_fingerprint::IsPlausibleFeature(f)) {
++      continue;
++    }
+     auto feature_name_enum_optional =
+         GPUSupportedFeatures::ToV8FeatureNameEnum(f);
+     if (feature_name_enum_optional) {
+       features->AddFeatureName(
+           V8GPUFeatureName(feature_name_enum_optional.value()));
++    }
++  }
++  // fp-patches: the NVIDIA persona always advertises shader-f16 and
++  // dual-source-blending, even when the underlying adapter did not report
++  // them (vendor-observed force-add; AddFeatureName is idempotent).
++  if (webgpu_fingerprint::GetVendor() == "nvidia") {
++    constexpr wgpu::FeatureName kForcedFeatures[] = {
++        wgpu::FeatureName::ShaderF16,
++        wgpu::FeatureName::DualSourceBlending,
++    };
++    for (const wgpu::FeatureName f : kForcedFeatures) {
++      auto feature_name_enum_optional =
++          GPUSupportedFeatures::ToV8FeatureNameEnum(f);
++      if (feature_name_enum_optional) {
++        features->AddFeatureName(
++            V8GPUFeatureName(feature_name_enum_optional.value()));
+       }
++    }
+   }
+   return features;
+ }
+@@ -100,6 +124,28 @@
+     device_ = String::Format("0x%04x", info.deviceID);
+   } else {
+     device_ = String::Format("0x%08x", info.deviceID);
++  }
++  // fp-patches: WebGPU adapter persona. While fingerprinting is active,
++  // vendor/architecture/device agree with the WebGL persona (same identity
++  // seed resolves the same NVIDIA model). The macOS persona reports the
++  // Apple vendor and the "common-3" family architecture and keeps the real
++  // device string (mirrors what Chrome reports on real Macs); empty getter
++  // results keep the real adapter values.
++  const std::string fingerprint_vendor = webgpu_fingerprint::GetVendor();
++  if (!fingerprint_vendor.empty()) {
++    vendor_ = String::FromUTF8(fingerprint_vendor);
++    const std::string fingerprint_architecture =
++        webgpu_fingerprint::GetArchitecture();
++    if (!fingerprint_architecture.empty()) {
++      architecture_ = String::FromUTF8(fingerprint_architecture);
++    }
++    if (const uint32_t fingerprint_device_id =
++            webgpu_fingerprint::GetRawDeviceId()) {
++      device_ = String::Format(fingerprint_device_id <= 0xffff
++                                   ? "0x%04x"
++                                   : "0x%08x",
++                               fingerprint_device_id);
++    }
+   }
+   description_ = String::FromUTF8(info.device);
+   driver_ = String::FromUTF8(info.description);
+@@ -117,6 +163,12 @@
+ 
+   GPUSupportedLimits::ComboLimits limits;
+   GetHandle().GetLimits(limits.GetLinked());
++  // fp-patches: clamp the advertised limits to the persona table, gated on
++  // the persona being active so real limits are never lowered while
++  // fingerprinting is off.
++  if (!fingerprint_vendor.empty()) {
++    webgpu_fingerprint::ClampLimits(limits);
++  }
+   limits_ = MakeGarbageCollected<GPUSupportedLimits>(limits);
+ 
+   info_ = CreateAdapterInfoForAdapter();
+--- a/third_party/blink/renderer/modules/webgpu/gpu.cc
++++ b/third_party/blink/renderer/modules/webgpu/gpu.cc
+@@ -13,6 +13,7 @@
+ #include "gpu/command_buffer/client/webgpu_interface.h"
+ #include "gpu/config/gpu_finch_features.h"
+ #include "mojo/public/cpp/bindings/remote.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
+ #include "third_party/blink/public/mojom/gpu/gpu.mojom-blink.h"
+ #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
+@@ -221,6 +222,19 @@
+     case wgpu::RequestAdapterStatus::Unavailable:
+     case wgpu::RequestAdapterStatus::Error:
+     case wgpu::RequestAdapterStatus::CallbackCancelled:
++      // fp-patches: WebGPU blocklist bypass. While fingerprinting, still
++      // construct the adapter (its info is fully replaced by the persona
++      // hooks in GPUAdapter's constructor) when dawn returned a usable
++      // handle despite an Unavailable/Error status, so requestAdapter()
++      // resolves with the persona adapter instead of null on GPU-less or
++      // blocklisted hosts. Guarded on the handle: the GPUAdapter
++      // constructor queries dawn and cannot run on a null adapter.
++      if (fingerprint::Enabled() && adapter &&
++          (status == wgpu::RequestAdapterStatus::Unavailable ||
++           status == wgpu::RequestAdapterStatus::Error)) {
++        gpu_adapter = MakeGarbageCollected<GPUAdapter>(
++            this, std::move(adapter), dawn_control_client_, options);
++      }
+       break;
+   }
+   if (error_message.length != 0) {
+@@ -427,6 +441,15 @@
+ }
+ 
+ wgpu::TextureFormat GPU::GetPreferredCanvasFormat() {
++  // fp-patches: canvas-format consistency. While fingerprinting, every
++  // persona prefers "bgra8unorm" (the macOS/D3D answer) regardless of host
++  // OS — not keyed on --fingerprint-platform. This is the single source for
++  // getPreferredCanvasFormat(), GPUCanvasContext::configure()'s swap-chain
++  // storage, and the non-preferred-format console warning, so the three
++  // surfaces can never disagree under the spoof.
++  if (fingerprint::Enabled()) {
++    return wgpu::TextureFormat::BGRA8Unorm;
++  }
+ #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_LINUX)
+   // Interop of vulkan and GL has mesa driver bugs for BGRA format
+   // See anglebug.com/40644739

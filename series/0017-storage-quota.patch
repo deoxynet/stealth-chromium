@@ -1,0 +1,119 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 17/33] fingerprint: navigator.storage quota persona
+X-Spec: patches/12-storage-quota.md
+X-Files: third_party/blink/renderer/modules/quota/fingerprint_quota.h third_party/blink/renderer/modules/quota/storage_manager.cc third_party/blink/renderer/modules/quota/deprecated_storage_quota.cc
+
+---
+
+--- /dev/null
++++ b/third_party/blink/renderer/modules/quota/fingerprint_quota.h
+@@ -0,0 +1,51 @@
++// Copyright 2026 The fp-patches Authors
++// Use of this source code is governed by a GPLv3 license that can be
++// found in the LICENSE file of the fp-patches distribution.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_QUOTA_FINGERPRINT_QUOTA_H_
++#define THIRD_PARTY_BLINK_RENDERER_MODULES_QUOTA_FINGERPRINT_QUOTA_H_
++
++#include <algorithm>
++#include <cstdint>
++
++#include "base/command_line.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
++#include "third_party/blink/public/common/switches.h"
++
++// navigator.storage quota persona. Reported quota is deterministic per
++// identity seed, uniform in [400 MiB, 600 MiB); an explicit
++// --fingerprint-storage-quota=<MiB> wins. Real usage is never altered.
++namespace blink::fingerprint {
++
++inline int64_t NormalizeQuotaForFingerprint() {
++  if (!Enabled()) {
++    return 0;
++  }
++  if (auto mib = SwitchUint(switches::kFingerprintStorageQuota)) {
++    if (*mib > 0) {
++      return static_cast<int64_t>(*mib) << 20;
++    }
++  }
++  if (!Seed()) {
++    return 0;
++  }
++  const double jitter = RandomFor("storagequota") * 209715200.0;  // 200 MiB
++  return (int64_t{400} << 20) + static_cast<int64_t>(jitter);
++}
++
++// Vendor rule: spoof only when the real quota is large (>1 GiB, i.e. a real
++// disk-backed pool) or an explicit switch was passed; never report a quota
++// below actual usage.
++inline int64_t ApplyQuotaPersona(int64_t real_quota, int64_t usage) {
++  const int64_t spoof = NormalizeQuotaForFingerprint();
++  const bool explicit_switch = Enabled() && base::CommandLine::ForCurrentProcess()
++      ->HasSwitch(switches::kFingerprintStorageQuota);
++  if (spoof > 0 && (real_quota > (int64_t{1} << 30) || explicit_switch)) {
++    return std::max(usage, spoof);
++  }
++  return real_quota;
++}
++
++}  // namespace blink::fingerprint
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_MODULES_QUOTA_FINGERPRINT_QUOTA_H_
+--- a/third_party/blink/renderer/modules/quota/storage_manager.cc
++++ b/third_party/blink/renderer/modules/quota/storage_manager.cc
+@@ -2,6 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include "third_party/blink/renderer/modules/quota/fingerprint_quota.h"
+ #include "third_party/blink/renderer/modules/quota/storage_manager.h"
+ 
+ #include "mojo/public/cpp/bindings/callback_helpers.h"
+@@ -69,7 +70,10 @@
+ 
+   StorageEstimate* estimate = StorageEstimate::Create();
+   estimate->setUsage(usage_in_bytes);
+-  estimate->setQuota(quota_in_bytes);
++  // fp-patches: persona quota (deterministic per seed, [400, 600) MiB);
++  // usage stays real.
++  estimate->setQuota(fingerprint::ApplyQuotaPersona(quota_in_bytes,
++                                                    usage_in_bytes));
+ 
+   // We only want to show usage details for systems that are used by the app,
+   // this way we do not create any web compatibility issues by unecessarily
+--- a/third_party/blink/renderer/modules/quota/deprecated_storage_quota.cc
++++ b/third_party/blink/renderer/modules/quota/deprecated_storage_quota.cc
+@@ -44,6 +44,7 @@
+ #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+ #include "third_party/blink/renderer/core/frame/web_feature.h"
+ #include "third_party/blink/renderer/modules/quota/dom_error.h"
++#include "third_party/blink/renderer/modules/quota/fingerprint_quota.h"
+ #include "third_party/blink/renderer/modules/quota/quota_utils.h"
+ #include "third_party/blink/renderer/platform/bindings/script_state.h"
+ #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+@@ -73,8 +74,10 @@
+   }
+ 
+   if (success_callback) {
+-    success_callback->InvokeAndReportException(nullptr, usage_in_bytes,
+-                                               quota_in_bytes);
++    // fp-patches: persona quota (see fingerprint_quota.h).
++    success_callback->InvokeAndReportException(
++        nullptr, usage_in_bytes,
++        fingerprint::ApplyQuotaPersona(quota_in_bytes, usage_in_bytes));
+   }
+ }
+ 
+@@ -97,7 +100,9 @@
+     success_callback->InvokeAndReportException(
+         nullptr,
+         std::min(base::saturated_cast<int64_t>(requested_quota_in_bytes),
+-                 quota_in_bytes));
++                 // fp-patches: persona quota as the grant ceiling.
++                 fingerprint::ApplyQuotaPersona(quota_in_bytes,
++                                                usage_in_bytes)));
+   }
+ }
+ 

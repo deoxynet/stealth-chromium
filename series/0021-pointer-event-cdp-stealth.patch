@@ -1,0 +1,139 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 21] fingerprint: PointerEvent CDP stealth (kFromDebugger scrub + synthetic coalesced events)
+X-Spec: patches/33-pointer-event-input-stealth.md
+X-Files: third_party/blink/renderer/core/events/pointer_event_factory.cc
+
+---
+
+--- a/third_party/blink/renderer/core/events/pointer_event_factory.cc
++++ b/third_party/blink/renderer/core/events/pointer_event_factory.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "base/notreached.h"
+ #include "base/trace_event/trace_event.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_pointer_event_init.h"
+ #include "third_party/blink/renderer/core/events/pointer_event_util.h"
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+@@ -136,6 +137,71 @@
+   pointer_event_init->setTwist(web_pointer_event.twist);
+ }
+ 
++// fp-patches: CDP-injected mouse moves (kFromDebugger set) reach the
++// renderer with an empty coalesced vector, while real OS input carries
++// coalesced samples. Synthesize a 3–5 sample stream between the previous
++// and current position — ±0.15 px per-axis jitter, interpolated
++// coordinates, timestamps spaced 16 µs apart — deterministic per identity
++// seed. Constants follow the vendor build (spec
++// patches/33-pointer-event-input-stealth.md); LCG stream seeding is
++// reconstructed, per-seed determinism is what matters.
++Vector<WebPointerEvent> SynthesizeCoalescedEvents(
++    const WebPointerEvent& event,
++    const gfx::PointF& previous_screen_position) {
++  Vector<WebPointerEvent> samples;
++
++  const gfx::PointF current = event.PositionInScreen();
++  const float delta_x = current.x() - previous_screen_position.x();
++  const float delta_y = current.y() - previous_screen_position.y();
++
++  const uint32_t hash = static_cast<uint32_t>(
++      blink::fingerprint::HashFor("coalesced"));
++  // Y axis chosen for the seed mix (axis INFERRED in the spec).
++  uint32_t state =
++      static_cast<uint32_t>(static_cast<int32_t>(1000.f * delta_y)) ^ hash;
++  state = state * 0x19660D + 0x3C6EF35F;
++  const int denominator = static_cast<int>(state % 3) + 3;
++  state = state * 0x19660D + 0x3C6EF35F;
++  const int count = static_cast<int>(state % 3) + 3;
++
++  // Two parallel 32-bit LCG streams (the vendor pairs) for x/y jitter.
++  uint32_t jitter_x_state = state;
++  uint32_t jitter_y_state = hash * 0x17385CA9 + 0x47502932;
++
++  const base::TimeTicks end = event.TimeStamp();
++  for (int i = 0; i < count; ++i) {
++    const float t = static_cast<float>(i + 1) / denominator;
++    jitter_x_state = jitter_x_state * 0x19660D + 0x3C6EF35F;
++    jitter_y_state = jitter_y_state * 0x17385CA9 + 0x47502932;
++    const float jitter_x =
++        ((jitter_x_state >> 16) / 65536.f - 0.5f) * 0.3f;
++    const float jitter_y =
++        ((jitter_y_state >> 16) / 65536.f - 0.5f) * 0.3f;
++
++    WebPointerEvent sample = event;
++    // Scrub the CDP marker so the synthesized stream matches the parent.
++    sample.SetModifiers(event.GetModifiers() &
++                        ~WebInputEvent::kFromDebugger);
++    const gfx::PointF screen_pos(previous_screen_position.x() +
++                                     delta_x * t + jitter_x,
++                                 previous_screen_position.y() +
++                                     delta_y * t + jitter_y);
++    sample.SetPositionInScreen(screen_pos);
++    // Keep the widget pair consistent with the interpolated screen pair
++    // (CDP input sets screen := widget, so both share the same offset).
++    sample.SetPositionInWidget(
++        gfx::PointF(event.PositionInWidget().x() +
++                        (screen_pos.x() - current.x()),
++                    event.PositionInWidget().y() +
++                        (screen_pos.y() - current.y())));
++    // Monotonic timestamps >= 16 µs apart ending just before the parent
++    // event; with count <= 5 the vendor's 2 ms look-back clamp never binds.
++    sample.SetTimeStamp(end - base::Microseconds((count - i) * 16));
++    samples.push_back(sample);
++  }
++  return samples;
++}
++
+ }  // namespace
+ 
+ // static
+@@ -344,15 +410,21 @@
+   }
+ 
+   pointer_event_init->setView(view);
+-  UpdateCommonPointerEventInit(
+-      web_pointer_event,
+-      GetLastPointerPosition(pointer_event_init->pointerId(), web_pointer_event,
+-                             event_type),
+-      view, pointer_event_init);
++  const gfx::PointF last_screen_position = GetLastPointerPosition(
++      pointer_event_init->pointerId(), web_pointer_event, event_type);
++  UpdateCommonPointerEventInit(web_pointer_event, last_screen_position, view,
++                               pointer_event_init);
+ 
++  // fp-patches: strip the CDP/DevTools marker bit (kFromDebugger) before it
++  // reaches the DOM event; real OS input never carries it.
++  int dom_modifiers = web_pointer_event.GetModifiers();
++  const bool from_debugger =
++      (dom_modifiers & WebInputEvent::kFromDebugger) != 0;
++  if (blink::fingerprint::Enabled()) {
++    dom_modifiers &= ~WebInputEvent::kFromDebugger;
++  }
+   UIEventWithKeyState::SetFromWebInputEventModifiers(
+-      pointer_event_init,
+-      static_cast<WebInputEvent::Modifiers>(web_pointer_event.GetModifiers()));
++      pointer_event_init, static_cast<WebInputEvent::Modifiers>(dom_modifiers));
+ 
+   SetEventSpecificFields(pointer_event_init, type);
+ 
+@@ -360,8 +432,17 @@
+       predicted_pointer_events;
+   if (type == event_type_names::kPointermove ||
+       type == event_type_names::kPointerrawupdate) {
++    // fp-patches: CDP mouse moves arrive with an empty coalesced vector —
++    // serve a synthesized human-looking stream instead.
++    Vector<WebPointerEvent> effective_coalesced = coalesced_events;
++    if (blink::fingerprint::Enabled() && from_debugger &&
++        web_pointer_event.pointer_type ==
++            WebPointerProperties::PointerType::kMouse) {
++      effective_coalesced =
++          SynthesizeCoalescedEvents(web_pointer_event, last_screen_position);
++    }
+     coalesced_pointer_events = CreateEventSequence(
+-        web_pointer_event, pointer_event_init, coalesced_events, view);
++        web_pointer_event, pointer_event_init, effective_coalesced, view);
+   }
+   if (type == event_type_names::kPointermove) {
+     predicted_pointer_events = CreateEventSequence(

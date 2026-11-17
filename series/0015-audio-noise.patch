@@ -1,0 +1,96 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 15/33] fingerprint: deterministic AudioBuffer sample noise
+X-Spec: patches/06-audio-noise.md
+X-Files: third_party/blink/renderer/modules/webaudio/audio_buffer.h third_party/blink/renderer/modules/webaudio/audio_buffer.cc
+
+---
+
+--- a/third_party/blink/renderer/modules/webaudio/audio_buffer.h
++++ b/third_party/blink/renderer/modules/webaudio/audio_buffer.h
+@@ -127,6 +127,10 @@
+   uint32_t length_;
+ 
+   HeapVector<Member<DOMFloat32Array>> channels_;
++
++  // fp-patches: bit per channel marking that the deterministic noise has
++  // been applied, so repeated reads never accumulate.
++  uint32_t noise_channel_mask_ = 0;
+ };
+ 
+ // Shared data that audio threads can hold onto.
+--- a/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
++++ b/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
+@@ -28,6 +28,7 @@
+ 
+ #include "third_party/blink/renderer/modules/webaudio/audio_buffer.h"
+ 
++#include <algorithm>
+ #include <memory>
+ 
+ #include "base/compiler_specific.h"
+@@ -39,6 +40,28 @@
+ #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
+ #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+ #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
++
++namespace {
++
++// fp-patches: deterministic per-sample perturbation of AudioBuffer channel
++// data (±5e-6 amplitude), keyed to (identity seed, sample index). Applied
++// once per channel before JS sees the data.
++void ApplyAudioFingerprintNoise(float* data, size_t length) {
++  if (!fingerprint::NoiseEnabled() || !data || length == 0) {
++    return;
++  }
++  const uint32_t hash = static_cast<uint32_t>(fingerprint::HashFor("audio"));
++  for (size_t i = 0; i < length; ++i) {
++    uint32_t v = static_cast<uint32_t>(i) ^ hash;
++    v = v * 0x17385CA9u + 0x47502932u;
++    const float delta = static_cast<float>(
++        (static_cast<double>(v) / 4294967296.0 - 0.5) * 1e-5);
++    data[i] = std::clamp(data[i] + delta, -1.0f, 1.0f);
++  }
++}
++
++}  // namespace
+ 
+ namespace blink {
+ 
+@@ -220,7 +243,16 @@
+     return NotShared<DOMFloat32Array>(nullptr);
+   }
+ 
+-  return NotShared<DOMFloat32Array>(channels_[channel_index].Get());
++  DOMFloat32Array* array = channels_[channel_index].Get();
++  // fp-patches: perturb channel data once per channel (guard bit prevents
++  // accumulation across repeated getChannelData/copyFromChannel calls).
++  if (array && channel_index < 32 &&
++      !(noise_channel_mask_ & (1u << channel_index))) {
++    const auto span = array->AsSpan();
++    ApplyAudioFingerprintNoise(span.data(), span.size());
++    noise_channel_mask_ |= (1u << channel_index);
++  }
++  return NotShared<DOMFloat32Array>(array);
+ }
+ 
+ void AudioBuffer::copyFromChannel(NotShared<DOMFloat32Array> destination,
+@@ -250,6 +282,16 @@
+     return;
+   }
+ 
++  // fp-patches: perturb the source channel once before copying out.
++  if (channel_number < 32) {
++    DOMFloat32Array* source_array = channels_[channel_number].Get();
++    if (source_array && !(noise_channel_mask_ & (1u << channel_number))) {
++      const auto source_span = source_array->AsSpan();
++      ApplyAudioFingerprintNoise(source_span.data(), source_span.size());
++      noise_channel_mask_ |= (1u << channel_number);
++    }
++  }
++
+   base::span<const float> src = channels_[channel_number].Get()->AsSpan();
+   base::span<float> dst = destination->AsSpan();
+ 

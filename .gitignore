@@ -1,0 +1,5 @@
+.upstream-mirror/
+.verify-tree.*
+.base/
+.work/
+.probe/

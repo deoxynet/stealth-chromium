@@ -1,0 +1,300 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 1/33] fingerprint: core helpers and --fingerprint* switch constants
+X-Spec: patches/01-identity-seed.md, patches/02-switches-and-propagation.md
+X-Files: third_party/blink/public/common/switches.h third_party/blink/common/switches.cc third_party/blink/public/common/fingerprint/fingerprint.h
+
+---
+
+--- a/third_party/blink/public/common/switches.h
++++ b/third_party/blink/public/common/switches.h
+@@ -58,6 +58,36 @@
+ BLINK_COMMON_EXPORT extern const char kWebAudioBypassOutputBufferingOptOut[];
+ BLINK_COMMON_EXPORT extern const char kDisableReduceAcceptLanguage[];
+ BLINK_COMMON_EXPORT extern const char kXSLTEnabledPolicy[];
++
++// --- begin fingerprint patch set (fp-patches) -------------------------------
++// Identity-seed driven anti-fingerprinting switches. Declared here so that
++// blink renderer code, content and chrome can all reference them. Definitions
++// live in third_party/blink/common/switches.cc, semantics are documented in
++// the fp-patches series (series/0001-fingerprint-core.patch).
++BLINK_COMMON_EXPORT extern const char kFingerprint[];
++BLINK_COMMON_EXPORT extern const char kFingerprintBrand[];
++BLINK_COMMON_EXPORT extern const char kFingerprintBrandVersion[];
++BLINK_COMMON_EXPORT extern const char kFingerprintDeviceMemory[];
++BLINK_COMMON_EXPORT extern const char kFingerprintFontsDir[];
++BLINK_COMMON_EXPORT extern const char kFingerprintGpuRenderer[];
++BLINK_COMMON_EXPORT extern const char kFingerprintGpuVendor[];
++BLINK_COMMON_EXPORT extern const char kFingerprintHardwareConcurrency[];
++BLINK_COMMON_EXPORT extern const char kFingerprintLocale[];
++BLINK_COMMON_EXPORT extern const char kFingerprintLocation[];
++BLINK_COMMON_EXPORT extern const char kFingerprintNoise[];
++BLINK_COMMON_EXPORT extern const char kFingerprintPlatform[];
++BLINK_COMMON_EXPORT extern const char kFingerprintPlatformVersion[];
++BLINK_COMMON_EXPORT extern const char kFingerprintScreenHeight[];
++BLINK_COMMON_EXPORT extern const char kFingerprintScreenWidth[];
++BLINK_COMMON_EXPORT extern const char kFingerprintStorageQuota[];
++BLINK_COMMON_EXPORT extern const char kFingerprintTaskbarHeight[];
++BLINK_COMMON_EXPORT extern const char kFingerprintTimezone[];
++BLINK_COMMON_EXPORT extern const char kFingerprintWebrtcIp[];
++BLINK_COMMON_EXPORT extern const char kFingerprintingCanvasImageDataNoise[];
++BLINK_COMMON_EXPORT extern const char kFingerprintingCanvasMeasureTextNoise[];
++BLINK_COMMON_EXPORT extern const char kFingerprintingClientRectsNoise[];
++// --- end fingerprint patch set -------------------------------------------------
++
+ }  // namespace switches
+ }  // namespace blink
+ 
+--- a/third_party/blink/common/switches.cc
++++ b/third_party/blink/common/switches.cc
+@@ -168,5 +168,35 @@
+ // A switch that controls XSLT availability via enterprise policy.
+ const char kXSLTEnabledPolicy[] = "xslt-enabled-policy";
+ 
++
++// --- begin fingerprint patch set (fp-patches) ----------------------------------
++// Values are documented alongside their consumers in the fp-patches series.
++const char kFingerprint[] = "fingerprint";
++const char kFingerprintBrand[] = "fingerprint-brand";
++const char kFingerprintBrandVersion[] = "fingerprint-brand-version";
++const char kFingerprintDeviceMemory[] = "fingerprint-device-memory";
++const char kFingerprintFontsDir[] = "fingerprint-fonts-dir";
++const char kFingerprintGpuRenderer[] = "fingerprint-gpu-renderer";
++const char kFingerprintGpuVendor[] = "fingerprint-gpu-vendor";
++const char kFingerprintHardwareConcurrency[] = "fingerprint-hardware-concurrency";
++const char kFingerprintLocale[] = "fingerprint-locale";
++const char kFingerprintLocation[] = "fingerprint-location";
++const char kFingerprintNoise[] = "fingerprint-noise";
++const char kFingerprintPlatform[] = "fingerprint-platform";
++const char kFingerprintPlatformVersion[] = "fingerprint-platform-version";
++const char kFingerprintScreenHeight[] = "fingerprint-screen-height";
++const char kFingerprintScreenWidth[] = "fingerprint-screen-width";
++const char kFingerprintStorageQuota[] = "fingerprint-storage-quota";
++const char kFingerprintTaskbarHeight[] = "fingerprint-taskbar-height";
++const char kFingerprintTimezone[] = "fingerprint-timezone";
++const char kFingerprintWebrtcIp[] = "fingerprint-webrtc-ip";
++const char kFingerprintingCanvasImageDataNoise[] =
++    "fingerprinting-canvas-image-data-noise";
++const char kFingerprintingCanvasMeasureTextNoise[] =
++    "fingerprinting-canvas-measuretext-noise";
++const char kFingerprintingClientRectsNoise[] =
++    "fingerprinting-client-rects-noise";
++// --- end fingerprint patch set --------------------------------------------------
++
+ }  // namespace switches
+ }  // namespace blink
+--- /dev/null
++++ b/third_party/blink/public/common/fingerprint/fingerprint.h
+@@ -0,0 +1,211 @@
++// Copyright 2026 The fp-patches Authors
++// Use of this source code is governed by a GPLv3 license that can be
++// found in the LICENSE file of the fp-patches distribution.
++
++#ifndef THIRD_PARTY_BLINK_PUBLIC_COMMON_FINGERPRINT_FINGERPRINT_H_
++#define THIRD_PARTY_BLINK_PUBLIC_COMMON_FINGERPRINT_FINGERPRINT_H_
++
++#include <cstdint>
++#include <optional>
++#include <string>
++#include <string_view>
++
++#include "base/command_line.h"
++#include "base/no_destructor.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_util.h"
++#include "third_party/blink/public/common/switches.h"
++
++// Identity-seed driven anti-fingerprinting core.
++//
++// One 64-bit identity seed (--fingerprint, decimal ASCII) drives every
++// deterministic spoof in the fp-patches series. When the seed is absent the
++// browser process mints a random one at startup (see
++// ChromeMainDelegate::BasicStartupComplete), so fingerprinting is on by
++// default; passing --fingerprint=off (also false/0/disable/disabled) turns
++// the whole system off and every helper below degrades to "return nothing",
++// at which point call sites fall back to stock Chromium behavior.
++//
++// Hash derivation here is deliberately our own (FNV-1a + splitmix64): it is
++// stable across libc++ versions and platforms, unlike std::hash<std::string>.
++// Exact output values are therefore not identical to any other
++// implementation; only determinism per (seed, purpose) is guaranteed.
++namespace blink::fingerprint {
++
++// True unless --fingerprint is absent-and-unminted or set to an explicit
++// off-value. The browser process always mints a seed, so in practice this is
++// false only for explicit opt-out or in unit tests that never set the switch.
++inline bool Enabled() {
++  static const bool enabled = [] {
++    const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++    if (!cmd.HasSwitch(switches::kFingerprint)) {
++      return false;
++    }
++    const std::string value = base::ToLowerASCII(
++        cmd.GetSwitchValueASCII(switches::kFingerprint));
++    return value != "off" && value != "false" && value != "0" &&
++           value != "disable" && value != "disabled";
++  }();
++  return enabled;
++}
++
++// Parsed identity seed; nullopt when fingerprinting is disabled. Cached:
++// the command line is immutable by the time renderer code runs.
++inline std::optional<uint64_t> Seed() {
++  static const base::NoDestructor<std::optional<uint64_t>> seed([] {
++    if (!Enabled()) {
++      return std::optional<uint64_t>();
++    }
++    const std::string value = base::CommandLine::ForCurrentProcess()
++                                  ->GetSwitchValueASCII(switches::kFingerprint);
++    uint64_t parsed = 0;
++    if (!base::StringToUint64(value, &parsed)) {
++      return std::optional<uint64_t>();
++    }
++    return std::optional<uint64_t>(parsed);
++  }());
++  return *seed;
++}
++
++// Raw seed string ("" when disabled) — for hashing contexts that want the
++// original decimal text.
++inline std::string SeedString() {
++  if (!Seed()) {
++    return std::string();
++  }
++  return base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++      switches::kFingerprint);
++}
++
++// The noise family (canvas/measureText/clientRects/audio) is gated by
++// --fingerprint-noise; only the literal value "false" opts out.
++inline bool NoiseEnabled() {
++  static const bool enabled = [] {
++    if (!Enabled()) {
++      return false;
++    }
++    return base::CommandLine::ForCurrentProcess()
++               ->GetSwitchValueASCII(switches::kFingerprintNoise) != "false";
++  }();
++  return enabled;
++}
++
++// Spoofed desktop platform from --fingerprint-platform
++// ("windows"|"macos"|"linux"; anything else means no platform spoof).
++enum class Platform { kNone, kWindows, kMacOs, kLinux };
++
++inline Platform SpoofedPlatform() {
++  static const Platform platform = [] {
++    const std::string value = base::ToLowerASCII(
++        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++            switches::kFingerprintPlatform));
++    if (value == "windows") {
++      return Platform::kWindows;
++    }
++    if (value == "macos" || value == "darwin") {
++      return Platform::kMacOs;
++    }
++    if (value == "linux") {
++      return Platform::kLinux;
++    }
++    return Platform::kNone;
++  }();
++  return platform;
++}
++
++// FNV-1a 64-bit over bytes; stable and dependency-free.
++inline uint64_t Hash(std::string_view text) {
++  uint64_t hash = 1469598103934665603ULL;  // FNV-1a 64 offset basis
++  for (const char c : text) {
++    hash ^= static_cast<uint8_t>(c);
++    hash *= 1099511628211ULL;  // FNV-1a 64 prime
++  }
++  return hash;
++}
++
++// splitmix64 finalizer — turns lumpy hashes into uniform ones.
++inline uint64_t Mix(uint64_t x) {
++  x += 0x9E3779B97F4A7C15ULL;
++  x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
++  x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
++  return x ^ (x >> 31);
++}
++
++// Deterministic 64-bit value for a purpose string; identical seeds derive
++// identical values, different purposes derive independent values.
++inline uint64_t HashFor(std::string_view purpose) {
++  const std::string key = SeedString() + ":" + std::string(purpose);
++  return Mix(Hash(key));
++}
++
++// Deterministic double in [0, 1) for a purpose string.
++inline double RandomFor(std::string_view purpose) {
++  return static_cast<double>(HashFor(purpose) >> 11) *
++         (1.0 / 9007199254740992.0);  // 2^53
++}
++
++// Deterministic integer in [0, bound); bound must be > 0.
++inline uint32_t RandomBelow(std::string_view purpose, uint32_t bound) {
++  return static_cast<uint32_t>(HashFor(purpose) % bound);
++}
++
++// Small linear congruential generator for the noise family, seeded from the
++// identity. Multiplier/increment constants reproduce the vendor LCG
++// (0x17385CA9 / 0x47502932); the emitted sequences are deterministic per
++// seed + salt but not bit-identical to any other build.
++class NoiseLcg {
++ public:
++  explicit NoiseLcg(std::string_view salt)
++      : state_(HashFor(salt) ^ 0x17385CA9ULL) {}
++
++  uint64_t Next() {
++    state_ = state_ * 0x17385CA9ULL + 0x47502932ULL;
++    return state_;
++  }
++
++  // Uniform integer in [0, bound) without modulo bias for small bounds.
++  uint32_t NextBelow(uint32_t bound) {
++    return static_cast<uint32_t>(Next() >> 32) % bound;
++  }
++
++  double NextDouble() {
++    return static_cast<double>(Next() >> 11) * (1.0 / 9007199254740992.0);
++  }
++
++ private:
++  uint64_t state_;
++};
++
++// Switch value parsers shared by several patches. Return fallback when
++// fingerprinting is off or the switch is absent/unparseable.
++inline std::optional<uint64_t> SwitchUint(std::string_view switch_name) {
++  if (!Enabled()) {
++    return std::nullopt;
++  }
++  const std::string value =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          std::string(switch_name));
++  uint64_t parsed = 0;
++  if (value.empty() || !base::StringToUint64(value, &parsed)) {
++    return std::nullopt;
++  }
++  return parsed;
++}
++
++inline std::optional<double> SwitchDouble(std::string_view switch_name) {
++  if (!Enabled()) {
++    return std::nullopt;
++  }
++  const std::string value =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          std::string(switch_name));
++  double parsed = 0.0;
++  if (value.empty() || !base::StringToDouble(value, &parsed)) {
++    return std::nullopt;
++  }
++  return parsed;
++}
++
++}  // namespace blink::fingerprint
++
++#endif  // THIRD_PARTY_BLINK_PUBLIC_COMMON_FINGERPRINT_FINGERPRINT_H_

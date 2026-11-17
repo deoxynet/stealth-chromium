@@ -1,0 +1,206 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 28] fingerprint: DNS/connect timing normalization
+X-Spec: patches/24-dns-timing.md
+X-Files: third_party/blink/renderer/core/timing/performance_resource_timing.cc
+
+---
+
+--- a/third_party/blink/renderer/core/timing/performance_resource_timing.cc
++++ b/third_party/blink/renderer/core/timing/performance_resource_timing.cc
+@@ -31,10 +31,16 @@
+ 
+ #include "third_party/blink/renderer/core/timing/performance_resource_timing.h"
+ 
++#include <algorithm>
++#include <utility>
++
++#include "base/command_line.h"
+ #include "base/containers/fixed_flat_set.h"
+ #include "base/notreached.h"
+ #include "services/network/public/mojom/service_worker_router_info.mojom-blink-forward.h"
+ #include "third_party/blink/public/common/features_generated.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
++#include "third_party/blink/public/common/switches.h"
+ #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
+ #include "third_party/blink/public/mojom/timing/performance_mark_or_measure.mojom-blink.h"
+ #include "third_party/blink/public/mojom/timing/resource_timing.mojom-blink-forward.h"
+@@ -42,6 +48,8 @@
+ #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_object_builder.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_render_blocking_status_type.h"
++#include "third_party/blink/renderer/core/dom/document.h"
++#include "third_party/blink/renderer/core/frame/dom_window.h"
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+ #include "third_party/blink/renderer/core/loader/document_loader.h"
+ #include "third_party/blink/renderer/core/performance_entry_names.h"
+@@ -60,7 +68,9 @@
+ #include "third_party/blink/renderer/platform/loader/fetch/service_worker_router_info.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+ #include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
++#include "third_party/blink/renderer/platform/weborigin/kurl.h"
+ #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
++#include "third_party/blink/renderer/platform/wtf/text/string_view.h"
+ #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+ 
+ namespace blink {
+@@ -87,6 +97,83 @@
+     return initiator_type;
+   }
+   return fetch_initiator_type_names::kOther;
++}
++
++// fp-patches: DNS/connect timing normalization (spec
++// patches/24-dns-timing.md). Behind a proxy there is no local DNS
++// resolution, so cross-origin Resource Timing would otherwise expose
++// domainLookupStart == domainLookupEnd (== 0 or fetchStart) — a proxy-
++// detection fingerprint. The four accessors below replace the DNS/connect
++// window with deterministic offsets derived from (identity seed, request
++// host), anchored at fetchStart(). Same-host subresources keep stock
++// timings.
++
++// The vendor build reads network_switches::kProxyServer; that header is
++// not reachable from blink renderer deps, so use the literal. Note that
++// the stock renderer command line does not inherit --proxy-server, so the
++// practical trigger is --fingerprint-webrtc-ip (propagated by patch 0003).
++constexpr char kProxyServerSwitch[] = "proxy-server";
++
++bool ShouldNormalizeDnsTiming() {
++  static const bool active = [] {
++    if (!fingerprint::Enabled()) {
++      return false;
++    }
++    const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++    return cmd.HasSwitch(switches::kFingerprintWebrtcIp) ||
++           cmd.HasSwitch(kProxyServerSwitch);
++  }();
++  return active;
++}
++
++uint32_t DnsBaseSeed() {
++  static const uint32_t base_seed = [] {
++    // Low 32 bits of the decimal identity seed (the vendor parsed
++    // --fingerprint with StringToInt and kept the low 32 bits; its
++    // TimeTicks fallback is unreachable because a seed is minted
++    // whenever fingerprinting is enabled).
++    if (auto seed = fingerprint::Seed()) {
++      return static_cast<uint32_t>(*seed);
++    }
++    return static_cast<uint32_t>(fingerprint::HashFor("dns-timing"));
++  }();
++  return base_seed;
++}
++
++// Vendor host hash: Java-style h = 31 * h + c over the host characters
++// (Latin-1 characters are read zero-extended, so both string flavors hash
++// identically).
++uint32_t DnsHostHash(const String& host) {
++  uint32_t hash = 0;
++  const StringView view(host);
++  for (unsigned i = 0; i < view.length(); ++i) {
++    hash = 31 * hash + view[i];
++  }
++  return hash;
++}
++
++String ResourceHost(const String& url) {
++  return KURL(url).Host().ToString();
++}
++
++// Synthetic (DNS start offset, DNS duration) pair in milliseconds over
++// fetchStart(); {0, 0} means "same-host subresource, do not spoof".
++std::pair<double, double> ComputeDnsOffsets(const String& url,
++                                            const AtomicString& initiator,
++                                            DOMWindow* window) {
++  const String host = ResourceHost(url);
++  if (window && initiator != performance_entry_names::kNavigation) {
++    if (auto* local = DynamicTo<LocalDOMWindow>(window)) {
++      if (host == local->document()->Url().Host()) {
++        return {0.0, 0.0};
++      }
++    }
++  }
++  const uint32_t x = DnsHostHash(host) ^ DnsBaseSeed();
++  // Lane 0 in [0.5, ~3.1] ms, lane 1 in [0.5, ~8.0] ms; correction terms
++  // from bits 16-25 and 26-31 of host_hash ^ seed.
++  return {0.5 + (x & 0xff) * 2.5 / 255.0 + ((x >> 16) & 0x3ff) / 10000.0,
++          0.5 + ((x >> 8) & 0xff) * 7.5 / 255.0 + (x >> 26) / 10000.0};
+ }
+ }  // namespace
+ 
+@@ -328,6 +415,14 @@
+ DOMHighResTimeStamp PerformanceResourceTiming::domainLookupStart() const {
+   if (!info_->allow_timing_details) {
+     return 0.0;
++  }
++  // fp-patches: synthetic DNS window start.
++  if (ShouldNormalizeDnsTiming()) {
++    const std::pair<double, double> offsets =
++        ComputeDnsOffsets(info_->name, initiator_type_, source());
++    if (offsets.first > 0.0) {
++      return fetchStart() + offsets.first;
++    }
+   }
+   if (!info_->timing || !info_->timing->connect_timing ||
+       info_->timing->connect_timing->domain_lookup_start.is_null()) {
+@@ -342,6 +437,26 @@
+ DOMHighResTimeStamp PerformanceResourceTiming::domainLookupEnd() const {
+   if (!info_->allow_timing_details) {
+     return 0.0;
++  }
++  // fp-patches: synthetic DNS window end; clamped to end 1 ms before the
++  // real connect end and never before the (possibly synthetic) start.
++  if (ShouldNormalizeDnsTiming()) {
++    const std::pair<double, double> offsets =
++        ComputeDnsOffsets(info_->name, initiator_type_, source());
++    if (offsets.second > 0.0) {
++      double end = fetchStart() + offsets.first + offsets.second;
++      if (info_->timing && info_->timing->connect_timing &&
++          !info_->timing->connect_timing->connect_end.is_null()) {
++        end = std::min(
++            end,
++            Performance::MonotonicTimeToDOMHighResTimeStamp(
++                TimeOrigin(), info_->timing->connect_timing->connect_end,
++                info_->allow_negative_values,
++                CrossOriginIsolatedCapability()) -
++                1.0);
++      }
++      return std::max(end, domainLookupStart());
++    }
+   }
+   if (!info_->timing || !info_->timing->connect_timing ||
+       info_->timing->connect_timing->domain_lookup_end.is_null()) {
+@@ -370,9 +485,16 @@
+     connect_start = info_->timing->connect_timing->domain_lookup_end;
+   }
+ 
+-  return Performance::MonotonicTimeToDOMHighResTimeStamp(
+-      TimeOrigin(), connect_start, info_->allow_negative_values,
+-      CrossOriginIsolatedCapability());
++  const double stock_connect_start =
++      Performance::MonotonicTimeToDOMHighResTimeStamp(
++          TimeOrigin(), connect_start, info_->allow_negative_values,
++          CrossOriginIsolatedCapability());
++  // fp-patches: keep the synthetic window monotonic — never report a
++  // connectStart before the (possibly synthetic) domainLookupEnd.
++  if (ShouldNormalizeDnsTiming()) {
++    return std::max(stock_connect_start, domainLookupEnd());
++  }
++  return stock_connect_start;
+ }
+ 
+ DOMHighResTimeStamp PerformanceResourceTiming::connectEnd() const {
+@@ -404,6 +526,12 @@
+ 
+   if (info_->timing && info_->timing->connect_timing &&
+       !info_->timing->connect_timing->ssl_start.is_null()) {
++    // fp-patches: synthetic TLS start — connectStart() + [0.1, 0.5] ms,
++    // jitter derived from the un-seeded host hash.
++    if (ShouldNormalizeDnsTiming()) {
++      const uint32_t host_hash = DnsHostHash(ResourceHost(info_->name));
++      return connectStart() + 0.1 + (host_hash & 0xff) * 0.4 / 255.0;
++    }
+     return Performance::MonotonicTimeToDOMHighResTimeStamp(
+         TimeOrigin(), info_->timing->connect_timing->ssl_start,
+         info_->allow_negative_values, CrossOriginIsolatedCapability());

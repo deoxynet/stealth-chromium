@@ -1,0 +1,128 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 27] fingerprint: window position + outer size persona
+X-Spec: patches/31-window-position-outer-size.md
+X-Files: third_party/blink/renderer/core/frame/local_dom_window.cc
+
+---
+
+--- a/third_party/blink/renderer/core/frame/local_dom_window.cc
++++ b/third_party/blink/renderer/core/frame/local_dom_window.cc
+@@ -40,6 +40,7 @@
+ #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
+ #include "net/storage_access_api/status.h"
+ #include "third_party/blink/public/common/features.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/common/navigation/impression.h"
+ #include "third_party/blink/public/common/switches.h"
+ #include "third_party/blink/public/mojom/devtools/inspector_issue.mojom-blink.h"
+@@ -211,6 +212,31 @@
+       MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+   resolver->Resolve();
+   return resolver->Promise();
++}
++
++// fp-patches: seed-derived window origin inside the spoofed screen (spec
++// patches/31-window-position-outer-size.md). The vendor build hashed
++// seed + "screenX"/"screenY" into the band left by fixed margins around
++// the screen edges (50px horizontal, 30px vertical) after subtracting the
++// outer size, so the window can never be reported outside the spoofed
++// (patch 0007) screen; HashFor provides the same per-identity determinism
++// with our stable hash. A degenerate range (window at least as large as
++// the screen minus the margin) reports the vendor's fixed fallback of 10.
++int FingerprintWindowOrigin(const LocalDOMWindow& window, bool y_axis) {
++  // The Screen accessor is non-const only because it lazily creates the
++  // window's Screen; reading it from these const getters is safe.
++  Screen* screen = const_cast<LocalDOMWindow&>(window).screen();
++  const int margin = y_axis ? 30 : 50;
++  const int extent = y_axis ? screen->height() - window.outerHeight()
++                            : screen->width() - window.outerWidth();
++  const int range = extent - margin;
++  if (range <= 0) {
++    return 10;
++  }
++  const uint32_t offset =
++      fingerprint::RandomBelow(y_axis ? "screenY" : "screenX",
++                               static_cast<uint32_t>(range));
++  return margin + static_cast<int>(offset);
+ }
+ 
+ }  // namespace
+@@ -1607,12 +1633,23 @@
+     return 0;
+ 
+   ChromeClient& chrome_client = page->GetChromeClient();
++  int outer_height = chrome_client.RootWindowRect(*frame).height();
+   if (page->GetSettings().GetReportScreenSizeInPhysicalPixelsQuirk()) {
+-    return static_cast<int>(
+-        lroundf(chrome_client.RootWindowRect(*frame).height() *
++    outer_height = static_cast<int>(
++        lroundf(outer_height *
+                 chrome_client.GetScreenInfo(*frame).device_scale_factor));
+   }
+-  return chrome_client.RootWindowRect(*frame).height();
++  // fp-patches: never report an outer size larger than the spoofed
++  // screen's available area — hides headless "window bigger than screen"
++  // tells and keeps outer* consistent with screen.avail* (spec 31).
++  if (fingerprint::Enabled()) {
++    // The Screen accessor is non-const only because it lazily creates the
++    // window's Screen; reading it from these const getters is safe.
++    const int avail =
++        const_cast<LocalDOMWindow*>(this)->screen()->availHeight();
++    return avail < outer_height ? avail : outer_height;
++  }
++  return outer_height;
+ }
+ 
+ int LocalDOMWindow::outerWidth() const {
+@@ -1632,12 +1669,20 @@
+     return 0;
+ 
+   ChromeClient& chrome_client = page->GetChromeClient();
++  int outer_width = chrome_client.RootWindowRect(*frame).width();
+   if (page->GetSettings().GetReportScreenSizeInPhysicalPixelsQuirk()) {
+-    return static_cast<int>(
+-        lroundf(chrome_client.RootWindowRect(*frame).width() *
++    outer_width = static_cast<int>(
++        lroundf(outer_width *
+                 chrome_client.GetScreenInfo(*frame).device_scale_factor));
+   }
+-  return chrome_client.RootWindowRect(*frame).width();
++  // fp-patches: see outerHeight — outerWidth = min(real, availWidth).
++  if (fingerprint::Enabled()) {
++    // The Screen accessor is non-const only because it lazily creates the
++    // window's Screen; reading it from these const getters is safe.
++    const int avail = const_cast<LocalDOMWindow*>(this)->screen()->availWidth();
++    return avail < outer_width ? avail : outer_width;
++  }
++  return outer_width;
+ }
+ 
+ gfx::Size LocalDOMWindow::GetViewportSize() const {
+@@ -1695,6 +1740,13 @@
+   Page* page = frame->GetPage();
+   if (!page)
+     return 0;
++
++  // fp-patches: seed-derived window origin inside the spoofed screen
++  // (spec 31); replaces the stock ChromeClient position (including the
++  // physical-pixels quirk) entirely.
++  if (fingerprint::Enabled()) {
++    return FingerprintWindowOrigin(*this, /*y_axis=*/false);
++  }
+ 
+   ChromeClient& chrome_client = page->GetChromeClient();
+   if (page->GetSettings().GetReportScreenSizeInPhysicalPixelsQuirk()) {
+@@ -1714,6 +1766,11 @@
+   if (!page)
+     return 0;
+ 
++  // fp-patches: see screenX (margin 30 instead of 50).
++  if (fingerprint::Enabled()) {
++    return FingerprintWindowOrigin(*this, /*y_axis=*/true);
++  }
++
+   ChromeClient& chrome_client = page->GetChromeClient();
+   if (page->GetSettings().GetReportScreenSizeInPhysicalPixelsQuirk()) {
+     return static_cast<int>(

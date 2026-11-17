@@ -1,0 +1,271 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 26] fingerprint: CSS system colors (Windows persona)
+X-Spec: patches/27-system-colors.md
+X-Files: third_party/blink/renderer/core/layout/layout_theme.cc third_party/blink/renderer/core/fingerprint/windows_system_colors.h ui/color/color_provider_utils.cc
+
+---
+
+--- a/third_party/blink/renderer/core/layout/layout_theme.cc
++++ b/third_party/blink/renderer/core/layout/layout_theme.cc
+@@ -22,6 +22,7 @@
+ #include "third_party/blink/renderer/core/layout/layout_theme.h"
+ 
+ #include "build/build_config.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/strings/grit/blink_strings.h"
+ #include "third_party/blink/public/web/blink.h"
+ #include "third_party/blink/renderer/core/css_value_keywords.h"
+@@ -30,6 +31,7 @@
+ #include "third_party/blink/renderer/core/dom/shadow_root.h"
+ #include "third_party/blink/renderer/core/editing/frame_selection.h"
+ #include "third_party/blink/renderer/core/fileapi/file.h"
++#include "third_party/blink/renderer/core/fingerprint/windows_system_colors.h"
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/core/frame/settings.h"
+ #include "third_party/blink/renderer/core/html/forms/html_button_element.h"
+@@ -577,6 +579,21 @@
+                                mojom::blink::ColorScheme color_scheme,
+                                const ui::ColorProvider* color_provider,
+                                bool is_in_web_app_scope) const {
++  // fp-patches: Windows persona for CSS system colors — serve hardcoded
++  // Windows-default palette values instead of the host platform's, so a
++  // non-Windows host cannot leak its palette (GTK on Linux) through
++  // getComputedStyle or UA rendering. Keywords without a persona color
++  // (internal ids) fall through to the stock paths below. The gate and
++  // two-sided design (this hook + the ui color mixer defaults) follow the
++  // vendor build; the exact constants were not recovered from the binary
++  // (spec patches/27-system-colors.md).
++  if (fingerprint::Enabled() &&
++      fingerprint::SpoofedPlatform() == fingerprint::Platform::kWindows) {
++    if (auto windows_color = fingerprint::WindowsSystemColor(
++            css_value_id, color_scheme == mojom::blink::ColorScheme::kDark)) {
++      return *windows_color;
++    }
++  }
+   if (color_provider && !WebTestSupport::IsRunningWebTest()) {
+     return SystemColorFromColorProvider(css_value_id, color_scheme,
+                                         color_provider, is_in_web_app_scope);
+--- /dev/null
++++ b/third_party/blink/renderer/core/fingerprint/windows_system_colors.h
+@@ -0,0 +1,126 @@
++// Copyright 2026 The fp-patches Authors
++// Use of this source code is governed by a GPLv3 license that can be
++// found in the LICENSE file of the fp-patches distribution.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_WINDOWS_SYSTEM_COLORS_H_
++#define THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_WINDOWS_SYSTEM_COLORS_H_
++
++// fp-patches: Windows-persona palette for the CSS system color keywords.
++//
++// Serves hardcoded Windows-default colors so that a Chromium build running
++// on a non-Windows host never leaks the host palette (GTK on Linux, Aqua on
++// macOS) through CSS system colors (`getComputedStyle`, UA rendering).
++// Reimplementation of the vendor build's LayoutTheme::SystemColor jump
++// table (spec patches/27-system-colors.md). The vendor's exact per-keyword
++// constants were not recovered from the binary; the values below are a
++// representative table reconstructed from the public Windows 10/11 default
++// system palette (light) and from Chromium's documented dark defaults for
++// keywords where Windows has no distinct dark-mode syscolor. Determinism is
++// what matters, not bit-parity with any other build.
++
++#include <optional>
++
++#include "third_party/blink/renderer/core/css_value_keywords.h"
++#include "third_party/blink/renderer/platform/graphics/color.h"
++
++namespace blink::fingerprint {
++
++// Returns the Windows-persona color for a CSS system color keyword, or
++// nullopt for keywords that are not spoofed (internal ids fall back to the
++// stock LayoutTheme paths).
++inline std::optional<Color> WindowsSystemColor(CSSValueID css_value_id,
++                                               bool dark_scheme) {
++  switch (css_value_id) {
++    // No public Windows syscolor; Windows Chromium reports Chromium's own
++    // constants for these, so the persona must not diverge from them.
++    case CSSValueID::kActivetext:
++      return Color(0xFF, 0x00, 0x00);
++    case CSSValueID::kMark:
++      return Color(0xFF, 0xFF, 0x00);
++    case CSSValueID::kMarktext:
++      return Color::kBlack;
++    case CSSValueID::kVisitedtext:
++      return dark_scheme ? Color(0xD0, 0xAD, 0xF0) : Color(0x55, 0x1A, 0x8B);
++
++    // Default Windows accent color (also COLOR_HIGHLIGHT on 10/11).
++    case CSSValueID::kAccentcolor:
++      return Color(0x00, 0x78, 0xD7);
++    case CSSValueID::kAccentcolortext:
++      // The accent is dark in both schemes, so text on it is white.
++      return Color::kWhite;
++
++    case CSSValueID::kButtonborder:
++    // The following system colors were deprecated to default to ButtonBorder.
++    case CSSValueID::kActiveborder:
++    case CSSValueID::kInactiveborder:
++    case CSSValueID::kThreeddarkshadow:
++    case CSSValueID::kThreedhighlight:
++    case CSSValueID::kThreedlightshadow:
++    case CSSValueID::kThreedshadow:
++    case CSSValueID::kWindowframe:
++      return dark_scheme ? Color(0x6B, 0x6B, 0x6B)
++                         : Color(0x64, 0x64, 0x64);  // Win10 WindowFrame.
++    case CSSValueID::kButtonface:
++    // The following system colors were deprecated to default to ButtonFace.
++    case CSSValueID::kButtonhighlight:
++    case CSSValueID::kButtonshadow:
++    case CSSValueID::kThreedface:
++      return dark_scheme ? Color(0x6B, 0x6B, 0x6B)
++                         : Color(0xF0, 0xF0, 0xF0);  // Win10 COLOR_3DFACE.
++    case CSSValueID::kButtontext:
++      return dark_scheme ? Color::kWhite : Color::kBlack;
++
++    case CSSValueID::kCanvas:
++    // The following system colors were deprecated to default to Canvas.
++    case CSSValueID::kAppworkspace:
++    case CSSValueID::kBackground:
++    case CSSValueID::kInactivecaption:
++    case CSSValueID::kInfobackground:
++    case CSSValueID::kMenu:
++    case CSSValueID::kWindow:
++      return dark_scheme ? Color(0x12, 0x12, 0x12) : Color::kWhite;
++    case CSSValueID::kScrollbar:
++      // Win10 COLOR_SCROLLBAR differs from Window in the light scheme.
++      return dark_scheme ? Color(0x12, 0x12, 0x12) : Color(0xF0, 0xF0, 0xF0);
++    case CSSValueID::kCanvastext:
++    // The following system colors were deprecated to default to CanvasText.
++    case CSSValueID::kActivecaption:
++    case CSSValueID::kCaptiontext:
++    case CSSValueID::kInfotext:
++    case CSSValueID::kMenutext:
++    case CSSValueID::kWindowtext:
++      return dark_scheme ? Color::kWhite : Color::kBlack;
++
++    case CSSValueID::kField:
++      return dark_scheme ? Color(0x3B, 0x3B, 0x3B) : Color::kWhite;
++    case CSSValueID::kFieldtext:
++    case CSSValueID::kText:
++      return dark_scheme ? Color::kWhite : Color::kBlack;
++
++    case CSSValueID::kGraytext:
++    // Deprecated to default to GrayText.
++    case CSSValueID::kInactivecaptiontext:
++      return dark_scheme ? Color(0xA6, 0xA6, 0xA6)
++                         : Color(0x6D, 0x6D, 0x6D);  // Win10 COLOR_GRAYTEXT.
++
++    // Win10/11 default accent; the OS accent does not change with theme.
++    case CSSValueID::kHighlight:
++    case CSSValueID::kSelecteditem:
++      return Color(0x00, 0x78, 0xD7);
++    case CSSValueID::kHighlighttext:
++    case CSSValueID::kSelecteditemtext:
++      return Color::kWhite;
++
++    case CSSValueID::kLinktext:
++      // Windows maps link text onto COLOR_HOTLIGHT.
++      return dark_scheme ? Color(0x9E, 0x9E, 0xFF)
++                         : Color(0x00, 0x66, 0xCC);
++
++    default:
++      return std::nullopt;
++  }
++}
++
++}  // namespace blink::fingerprint
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_WINDOWS_SYSTEM_COLORS_H_
+--- a/ui/color/color_provider_utils.cc
++++ b/ui/color/color_provider_utils.cc
+@@ -7,6 +7,7 @@
+ #include <memory>
+ #include <string_view>
+ 
++#include "base/command_line.h"
+ #include "base/containers/fixed_flat_map.h"
+ #include "base/no_destructor.h"
+ #include "base/strings/string_util.h"
+@@ -548,10 +549,82 @@
+   mixer[kColorWebNativeControlSliderHovered] = {kColorCssSystemHighlight};
+   mixer[kColorWebNativeControlSliderPressed] = {kColorCssSystemHighlight};
+   CompleteScrollbarColorsDefinition(mixer);
++}
++
++namespace {
++
++// fp-patches: gate for the Windows CSS-system-color persona (spec
++// patches/27-system-colors.md): --fingerprint must be present and not an
++// off-value, and --fingerprint-platform must be "windows". ui/ cannot
++// include the blink fingerprint core, so the switch names and off-value
++// semantics are repeated here from
++// third_party/blink/public/common/fingerprint/fingerprint.h.
++bool ShouldSpoofWindowsSystemColors() {
++  static const bool spoof = [] {
++    const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++    if (!cmd.HasSwitch("fingerprint")) {
++      return false;
++    }
++    const std::string value =
++        base::ToLowerASCII(cmd.GetSwitchValueASCII("fingerprint"));
++    if (value == "off" || value == "false" || value == "0" ||
++        value == "disable" || value == "disabled") {
++      return false;
++    }
++    return base::ToLowerASCII(cmd.GetSwitchValueASCII(
++               "fingerprint-platform")) == "windows";
++  }();
++  return spoof;
+ }
+ 
++}  // namespace
++
+ void CompleteDefaultCssSystemColorDefinition(ui::ColorMixer& mixer,
+                                              bool dark_mode) {
++  // fp-patches: Windows persona — define the default CSS system colors from
++  // the hardcoded Windows 10/11 default palette instead of the
++  // cross-platform defaults, so the ColorProvider path agrees with the
++  // LayoutTheme::SystemColor hook and a non-Windows host cannot leak its
++  // platform palette. Values are reconstructed from the public Windows
++  // defaults (the vendor binary's exact constants were not recovered).
++  if (ShouldSpoofWindowsSystemColors()) {
++    mixer[kColorCssSystemActiveText] = {SkColorSetRGB(0xFF, 0x00, 0x00)};
++    mixer[kColorCssSystemGrayText] =
++        {dark_mode ? SkColorSetRGB(0xA6, 0xA6, 0xA6)
++                   : SkColorSetRGB(0x6D, 0x6D, 0x6D)};
++    // Win10/11 default accent (COLOR_HIGHLIGHT); theme-independent.
++    mixer[kColorCssSystemHighlight] = {SkColorSetRGB(0x00, 0x78, 0xD7)};
++    mixer[kColorCssSystemHighlightText] = {SK_ColorWHITE};
++    if (dark_mode) {
++      mixer[kColorCssSystemBtnFace] = {SkColorSetRGB(0x6B, 0x6B, 0x6B)};
++      mixer[kColorCssSystemBtnText] = {SK_ColorWHITE};
++      mixer[kColorCssSystemField] = {SkColorSetRGB(0x3B, 0x3B, 0x3B)};
++      mixer[kColorCssSystemFieldText] = {SK_ColorWHITE};
++      mixer[kColorCssSystemMenuHilight] = {SkColorSetRGB(0x80, 0x00, 0x80)};
++      mixer[kColorCssSystemScrollbar] = {SkColorSetRGB(0x12, 0x12, 0x12)};
++      mixer[kColorCssSystemWindow] = {SkColorSetRGB(0x12, 0x12, 0x12)};
++      mixer[kColorCssSystemWindowText] = {SK_ColorWHITE};
++      mixer[kColorCssSystemHotlight] = {SkColorSetRGB(0x9E, 0x9E, 0xFF)};
++      mixer[kColorCssSystemLinkText] = {SkColorSetRGB(0x9E, 0x9E, 0xFF)};
++      mixer[kColorCssSystemVisitedText] = {SkColorSetRGB(0xD0, 0xAD, 0xF0)};
++    } else {
++      mixer[kColorCssSystemBtnFace] = {SkColorSetRGB(0xF0, 0xF0, 0xF0)};
++      mixer[kColorCssSystemBtnText] = {SK_ColorBLACK};
++      mixer[kColorCssSystemField] = {SK_ColorWHITE};
++      mixer[kColorCssSystemFieldText] = {SK_ColorBLACK};
++      // Win10 COLOR_MENUHILIGHT.
++      mixer[kColorCssSystemMenuHilight] = {SkColorSetRGB(0x33, 0x99, 0xFF)};
++      // Win10 COLOR_SCROLLBAR.
++      mixer[kColorCssSystemScrollbar] = {SkColorSetRGB(0xF0, 0xF0, 0xF0)};
++      mixer[kColorCssSystemWindow] = {SK_ColorWHITE};
++      mixer[kColorCssSystemWindowText] = {SK_ColorBLACK};
++      // Win10 COLOR_HOTLIGHT; Windows maps link text onto it.
++      mixer[kColorCssSystemHotlight] = {SkColorSetRGB(0x00, 0x66, 0xCC)};
++      mixer[kColorCssSystemLinkText] = {SkColorSetRGB(0x00, 0x66, 0xCC)};
++      mixer[kColorCssSystemVisitedText] = {SkColorSetRGB(0x55, 0x1A, 0x8B)};
++    }
++    return;
++  }
+   mixer[kColorCssSystemActiveText] = {SkColorSetRGB(0xFF, 0x00, 0x00)};
+   mixer[kColorCssSystemGrayText] = {SkColorSetRGB(0x80, 0x80, 0x80)};
+   mixer[kColorCssSystemHighlight] = {SkColorSetRGB(0x19, 0x67, 0xD2)};

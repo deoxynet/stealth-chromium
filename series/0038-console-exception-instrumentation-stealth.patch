@@ -1,0 +1,122 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 38/38] fingerprint: suppress Runtime console/exception inspector events (CDP stealth)
+X-Spec: patches/41-console-instrumentation-suppression.md
+X-Files: v8/src/inspector/v8-console-message.cc v8/src/inspector/v8-runtime-agent-impl.cc v8/src/flags/flag-definitions.h content/renderer/renderer_main.cc
+
+---
+
+--- a/v8/src/inspector/v8-console-message.cc
++++ b/v8/src/inspector/v8-console-message.cc
+@@ -10,6 +10,7 @@
+ #include "include/v8-microtask-queue.h"
+ #include "include/v8-primitive-object.h"
+ #include "src/debug/debug-interface.h"
++#include "src/flags/flags.h"
+ #include "src/inspector/inspected-context.h"
+ #include "src/inspector/protocol/Protocol.h"
+ #include "src/inspector/string-util.h"
+@@ -582,7 +583,15 @@
+       contextGroupId, [&message](V8InspectorSessionImpl* session) {
+         if (message->origin() == V8MessageOrigin::kConsole)
+           session->consoleAgent()->messageAdded(message.get());
+-        session->runtimeAgent()->messageAdded(message.get());
++        // fp-patches: while fingerprint-console-stealth is on, the Runtime
++        // agent is not notified, so Runtime.consoleAPICalled /
++        // Runtime.exceptionThrown are never emitted. An attached client that
++        // console.log()s an Error therefore cannot observe the inspector
++        // touching Error.stack via Error.prepareStackTrace. The Console
++        // domain (Console.messageAdded) is intentionally kept working.
++        if (!v8_flags.fingerprint_console_stealth) {
++          session->runtimeAgent()->messageAdded(message.get());
++        }
+       });
+   if (!inspector->hasConsoleMessageStorage(contextGroupId)) return;
+ 
+--- a/v8/src/inspector/v8-runtime-agent-impl.cc
++++ b/v8/src/inspector/v8-runtime-agent-impl.cc
+@@ -42,6 +42,7 @@
+ #include "include/v8-inspector.h"
+ #include "include/v8-microtask-queue.h"
+ #include "src/debug/debug-interface.h"
++#include "src/flags/flags.h"
+ #include "src/inspector/injected-script.h"
+ #include "src/inspector/inspected-context.h"
+ #include "src/inspector/protocol/Protocol.h"
+@@ -1116,11 +1117,17 @@
+   // Make a copy of the message to avoid a UAF.
+   const auto& messages = storage->messages();
+   const size_t size = messages.size();
+-  for (size_t i = 0; i < size; ++i) {
+-    if (i >= messages.size()) break;
+-    V8ConsoleMessage message = *messages[i];
+-    if (!reportMessage(&message, false)) {
+-      break;
++  // fp-patches: the replay path is gated together with the live fanout in
++  // V8ConsoleMessageStorage::addMessage. Without this, a client could
++  // recover the suppressed event stream by toggling Runtime.disable /
++  // Runtime.enable (observed on the vendor build this series models).
++  if (!v8_flags.fingerprint_console_stealth) {
++    for (size_t i = 0; i < size; ++i) {
++      if (i >= messages.size()) break;
++      V8ConsoleMessage message = *messages[i];
++      if (!reportMessage(&message, false)) {
++        break;
++      }
+     }
+   }
+   return Response::Success();
+--- a/v8/src/flags/flag-definitions.h
++++ b/v8/src/flags/flag-definitions.h
+@@ -4184,6 +4184,15 @@
+ DEFINE_IMPLICATION(ll_prof, log)
+ DEFINE_IMPLICATION(gdbjit, log)
+ 
++// fp-patches: suppress DevTools Runtime-domain console/exception
++// instrumentation (Runtime.consoleAPICalled, Runtime.exceptionThrown) so an
++// attached CDP client cannot observe the inspector touching Error.stack
++// (the Error.prepareStackTrace + console.log(new Error()) detection).
++// Set from content/renderer/renderer_main.cc whenever the fingerprint
++// identity system is active; defaults to off (stock behavior).
++DEFINE_BOOL(fingerprint_console_stealth, false,
++            "suppress Runtime console/exception inspector events")
++
+ // Cleanup...
+ #undef FLAG_FULL
+ #undef FLAG_READONLY
+--- a/content/renderer/renderer_main.cc
++++ b/content/renderer/renderer_main.cc
+@@ -47,6 +47,7 @@
+ #include "content/renderer/render_process_impl.h"
+ #include "content/renderer/render_thread_impl.h"
+ #include "content/renderer/renderer_main_platform_delegate.h"
++#include "include/v8.h"
+ #include "media/media_buildflags.h"
+ #include "mojo/public/cpp/bindings/direct_receiver.h"
+ #include "mojo/public/cpp/bindings/interface_endpoint_client.h"
+@@ -55,6 +56,7 @@
+ #include "services/tracing/public/cpp/trace_startup.h"
+ #include "skia/ext/font_utils.h"
+ #include "third_party/blink/public/common/features.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/common/switches.h"
+ #include "third_party/blink/public/platform/platform.h"
+ #include "third_party/blink/public/platform/scheduler/web_thread_scheduler.h"
+@@ -177,6 +179,16 @@
+     if (!locale.empty()) {
+       base::i18n::SetICUDefaultLocale(locale);
+     }
++  }
++
++  // fp-patches: while fingerprinting is active, suppress the DevTools
++  // Runtime-domain console/exception instrumentation (Runtime.
++  // consoleAPICalled and Runtime.exceptionThrown). V8's inspector cannot
++  // read Chromium switches, so the gate is passed as a v8 flag, set here
++  // before the first isolate exists in this process (worker isolates in
++  // renderer processes included). --fingerprint=off keeps stock behavior.
++  if (blink::fingerprint::Enabled()) {
++    v8::V8::SetFlagsFromString("--fingerprint-console-stealth");
+   }
+ 
+ #if BUILDFLAG(IS_MAC)

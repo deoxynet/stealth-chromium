@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 31] fingerprint: Skia text rendering persona (hinting/subpixel per platform)
+X-Spec: patches/36-text-rendering-params.md
+X-Files: third_party/blink/renderer/core/exported/web_view_impl.cc
+
+---
+
+--- a/third_party/blink/renderer/core/exported/web_view_impl.cc
++++ b/third_party/blink/renderer/core/exported/web_view_impl.cc
+@@ -49,6 +49,7 @@
+ #include "media/base/media_switches.h"
+ #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
+ #include "third_party/blink/public/common/features.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/common/fingerprinting_protection/noise_token.h"
+ #include "third_party/blink/public/common/history/session_history_constants.h"
+ #include "third_party/blink/public/common/input/web_input_event.h"
+@@ -3706,6 +3707,35 @@
+ 
+   WebThemeEngineHelper::DidUpdateRendererPreferences(preferences);
+   UpdateFontRenderingFromRendererPrefs();
++
++#if !BUILDFLAG(IS_MAC)
++  // fp-patches: Skia text rendering persona (spec
++  // patches/36-text-rendering-params.md). The stock renderer preferences
++  // were just applied above; for the spoofed desktop personas, override
++  // the rasterization knobs afterwards so text is drawn the way real
++  // Chrome draws it on the claimed OS: ClearType (full hinting + LCD
++  // subpixel rendering, pixel-aligned positions) on Windows, and the
++  // macOS 10.14+ look (slight hinting, grayscale antialiasing, subpixel
++  // positioning) on macOS. The Linux persona and any other value keep
++  // the stock preference-derived values.
++  if (fingerprint::Enabled()) {
++    const fingerprint::Platform platform = fingerprint::SpoofedPlatform();
++    if (platform == fingerprint::Platform::kWindows ||
++        platform == fingerprint::Platform::kMacOs) {
++      if (platform == fingerprint::Platform::kWindows) {
++        WebFontRenderStyle::SetHinting(SkFontHinting::kFull);
++        WebFontRenderStyle::SetSubpixelRendering(true);
++        WebFontRenderStyle::SetSubpixelPositioning(false);
++      } else {
++        WebFontRenderStyle::SetHinting(SkFontHinting::kSlight);
++        WebFontRenderStyle::SetSubpixelRendering(false);
++        WebFontRenderStyle::SetSubpixelPositioning(true);
++      }
++      WebFontRenderStyle::SetAutoHint(false);
++      WebFontRenderStyle::SetUseBitmaps(false);
++    }
++  }
++#endif  // !BUILDFLAG(IS_MAC)
+ 
+   blink::SetCaretBlinkInterval(
+       renderer_preferences_.caret_blink_interval.has_value()

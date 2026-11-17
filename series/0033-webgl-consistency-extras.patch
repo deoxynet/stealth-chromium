@@ -1,0 +1,114 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 33] fingerprint: WebGL per-GPU consistency (precision/extensions/formats)
+X-Spec: patches/14-webgl-consistency.md
+X-Files: third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc
+
+---
+
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+@@ -26,6 +26,7 @@
+ #include "third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.h"
+ 
+ #include <memory>
++#include <string.h>
+ #include <utility>
+ 
+ #include "base/bit_cast.h"
+@@ -3635,6 +3636,31 @@
+ 
+ bool WebGLRenderingContextBase::ExtensionSupportedAndAllowed(
+     const ExtensionTracker* tracker) {
++  // fp-patches: shape the extension list to the persona GPU. Compressed
++  // texture / multiview / snorm extensions leak the real hardware, and the
++  // timer-query extensions are force-shipped (bypassing the draft/dev
++  // runtime flags) when the backend supports them. Stock gating otherwise.
++  if (IsFingerprintGpuActive()) {
++    const char* name = tracker->ExtensionName();
++    static const char* const kPersonaHiddenExtensions[] = {
++        "EXT_render_snorm",
++        "EXT_texture_norm16",
++        "WEBGL_provoking_vertex",
++        "OVR_multiview2",
++        "WEBGL_compressed_texture_astc",
++        "WEBGL_compressed_texture_etc",
++        "WEBGL_compressed_texture_etc1",
++    };
++    for (const char* const hidden : kPersonaHiddenExtensions) {
++      if (strcmp(name, hidden) == 0) {
++        return false;
++      }
++    }
++    if (strcmp(name, "EXT_disjoint_timer_query") == 0 ||
++        strcmp(name, "EXT_disjoint_timer_query_webgl2") == 0) {
++      return tracker->Supported(this);
++    }
++  }
+   if (tracker->Draft() &&
+       !RuntimeEnabledFeatures::WebGLDraftExtensionsEnabled())
+     return false;
+@@ -4340,6 +4366,22 @@
+       SynthesizeGLError(GL_INVALID_ENUM, "getShaderPrecisionFormat",
+                         "invalid precision type");
+       return nullptr;
++  }
++
++  // fp-patches: persona precision for lowp/mediump — the safe cross-GPU
++  // values (binary32 for floats, 31/30/0 for ints). highp keeps querying
++  // the real driver so actual shader compilation behavior is unchanged.
++  if (IsFingerprintGpuActive()) {
++    switch (precision_type) {
++      case GL_LOW_FLOAT:
++      case GL_MEDIUM_FLOAT:
++        return MakeGarbageCollected<WebGLShaderPrecisionFormat>(127, 127, 23);
++      case GL_LOW_INT:
++      case GL_MEDIUM_INT:
++        return MakeGarbageCollected<WebGLShaderPrecisionFormat>(31, 30, 0);
++      default:
++        break;
++    }
+   }
+ 
+   GLint range[2] = {0, 0};
+--- a/third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc
+@@ -20,6 +20,7 @@
+ #include "third_party/blink/renderer/core/html/html_image_element.h"
+ #include "third_party/blink/renderer/core/html/media/html_video_element.h"
+ #include "third_party/blink/renderer/core/imagebitmap/image_bitmap.h"
++#include "third_party/blink/renderer/modules/webgl/gpu_fingerprint.h"
+ #include "third_party/blink/renderer/modules/webgl/webgl_active_info.h"
+ #include "third_party/blink/renderer/modules/webgl/webgl_buffer.h"
+ #include "third_party/blink/renderer/modules/webgl/webgl_fence_sync.h"
+@@ -644,6 +645,29 @@
+ 
+   switch (pname) {
+     case GL_SAMPLES: {
++      // fp-patches: persona MSAA sample counts, consistent with the spoofed
++      // renderer: macOS persona ships 4x MSAA, the NVIDIA persona 8x, other
++      // desktop personas 16x. Falls through to the real driver query when
++      // GPU spoofing is off.
++      if (IsFingerprintGpuActive()) {
++        int max_samples = 16;
++        if (ResolveFingerprintGpuPlatform() == "macos") {
++          max_samples = 4;
++        } else if (GetGLRendererStringForFingerprint().find("NVIDIA") !=
++                   std::string::npos) {
++          max_samples = 8;
++        }
++        int sample_count = 1;
++        for (int s = max_samples; s > 1; s >>= 1) {
++          ++sample_count;
++        }
++        auto values = base::HeapArray<GLint>::WithSize(sample_count);
++        values[0] = max_samples;
++        for (int i = 1; i < sample_count; ++i) {
++          values[i] = values[i - 1] / 2;
++        }
++        return WebGLAny(script_state, DOMInt32Array::Create(values));
++      }
+       GLint length = -1;
+       ContextGL()->GetInternalformativ(target, internalformat,
+                                        GL_NUM_SAMPLE_COUNTS, 1, &length);

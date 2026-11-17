@@ -1,0 +1,252 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 24] fingerprint: WebRTC ICE candidate + SDP IP rewrite
+X-Spec: patches/22-webrtc-candidate-sdp.md
+X-Files: third_party/blink/renderer/platform/peerconnection/rtc_ice_candidate_platform.cc third_party/blink/renderer/modules/peerconnection/rtc_peer_connection_handler.cc
+
+---
+
+--- a/third_party/blink/renderer/platform/peerconnection/rtc_ice_candidate_platform.cc
++++ b/third_party/blink/renderer/platform/peerconnection/rtc_ice_candidate_platform.cc
+@@ -4,6 +4,13 @@
+ 
+ #include "third_party/blink/renderer/platform/peerconnection/rtc_ice_candidate_platform.h"
+ 
++#include <sstream>
++#include <string>
++
++#include "base/command_line.h"
++#include "base/strings/string_util.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
++#include "third_party/blink/public/common/switches.h"
+ #include "third_party/webrtc/api/candidate.h"
+ #include "third_party/webrtc/p2p/base/p2p_constants.h"
+ 
+@@ -39,6 +46,35 @@
+   return String();
+ }
+ 
++// fp-patches: the --fingerprint-webrtc-ip replacement IP, or "" when the
++// WebRTC IP spoof is inactive (fingerprinting off, switch absent, empty
++// value) or the value is not pure ASCII — vendor semantics discard a
++// non-ASCII value rather than rewrite with it. Re-read independently by the
++// SDP (rtc_peer_connection_handler.cc) and getStats (rtc_stats_report.cc)
++// spoofs; keep the three readers' value semantics identical.
++std::string FingerprintWebrtcIpSpoof() {
++  if (!fingerprint::Enabled()) {
++    return std::string();
++  }
++  const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++  if (!cmd.HasSwitch(switches::kFingerprintWebrtcIp)) {
++    return std::string();
++  }
++  const std::string value =
++      cmd.GetSwitchValueNative(switches::kFingerprintWebrtcIp);
++  if (!base::IsStringASCII(value)) {
++    return std::string();
++  }
++  return value;
++}
++
++// fp-patches: host strings never rewritten (loopback/wildcard stay honest so
++// exempt candidates cannot disagree between the candidate object, SDP and
++// getStats()).
++bool IsExemptWebrtcHost(const std::string& host) {
++  return host.empty() || host == "0.0.0.0" || host == "127.0.0.1";
++}
++
+ }  // namespace
+ 
+ RTCIceCandidatePlatform::RTCIceCandidatePlatform(
+@@ -62,6 +98,9 @@
+     return;
+   }
+ 
++  // fp-patches: replacement IP for every host string this candidate exposes.
++  const std::string spoof = FingerprintWebrtcIpSpoof();
++
+   const webrtc::Candidate& c = parsed_candidate.value();
+ 
+   foundation_ = String::FromUTF8(c.foundation());
+@@ -70,6 +109,11 @@
+   protocol_ = String::FromUTF8(c.protocol());
+   if (!c.address().IsNil()) {
+     address_ = String::FromUTF8(c.address().HostAsURIString());
++    // fp-patches: swap in the spoofed IP; the port is kept as gathered.
++    if (!spoof.empty() &&
++        !IsExemptWebrtcHost(c.address().HostAsURIString())) {
++      address_ = String::FromUTF8(spoof);
++    }
+     port_ = c.address().port();
+   }
+   // The `type_name()` property returns a name as specified in:
+@@ -85,12 +129,46 @@
+   }
+   if (!c.related_address().IsNil()) {
+     related_address_ = String::FromUTF8(c.related_address().HostAsURIString());
++    // fp-patches: same substitution + exemption rule as |address_|; the
++    // related port is kept as gathered.
++    if (!spoof.empty() &&
++        !IsExemptWebrtcHost(c.related_address().HostAsURIString())) {
++      related_address_ = String::FromUTF8(spoof);
++    }
+     related_port_ = c.related_address().port();
+   }
+   // url_ is set only when the candidate was gathered locally.
+   if (type_ == "relay" && priority_ && !url_.IsNull()) {
+     relay_protocol_ = PriorityToRelayProtocol(*priority_);
+   }
++
++  // fp-patches: rebuild the raw candidate string around the spoofed
++  // connection address. The address is the 5th space-separated token
++  // (index 4 — "candidate:<foundation>" counts as one token) and the token
++  // following a literal "raddr" token is the related address; both carry
++  // the empty/0.0.0.0/127.0.0.1 exemption. Rebuilding from |candidate_|
++  // (not the parsed candidate) also rewrites fields the parser normalized.
++  if (!spoof.empty()) {
++    std::istringstream tokens(candidate_.Utf8());
++    std::string rebuilt;
++    std::string token;
++    int index = 0;
++    bool substitute = false;
++    while (tokens >> token) {
++      if (!rebuilt.empty()) {
++        rebuilt += ' ';
++      }
++      const bool next_follows_raddr = (token == "raddr");
++      if ((index == 4 || substitute) && !IsExemptWebrtcHost(token)) {
++        rebuilt += spoof;
++      } else {
++        rebuilt += token;
++      }
++      ++index;
++      substitute = next_follows_raddr;
++    }
++    candidate_ = String::FromUTF8(rebuilt);
++  }
+ }
+ 
+ }  // namespace blink
+--- a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection_handler.cc
++++ b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection_handler.cc
+@@ -10,10 +10,12 @@
+ #include <functional>
+ #include <memory>
+ #include <set>
++#include <sstream>
+ #include <string>
+ #include <utility>
+ #include <vector>
+ 
++#include "base/command_line.h"
+ #include "base/compiler_specific.h"
+ #include "base/location.h"
+ #include "base/logging.h"
+@@ -21,6 +23,7 @@
+ #include "base/metrics/histogram_functions.h"
+ #include "base/metrics/histogram_macros.h"
+ #include "base/numerics/safe_conversions.h"
++#include "base/strings/string_util.h"
+ #include "base/synchronization/waitable_event.h"
+ #include "base/task/sequenced_task_runner.h"
+ #include "base/task/single_thread_task_runner.h"
+@@ -29,6 +32,8 @@
+ #include "build/chromecast_buildflags.h"
+ #include "media/base/media_switches.h"
+ #include "third_party/blink/public/common/features.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
++#include "third_party/blink/public/common/switches.h"
+ #include "third_party/blink/public/platform/platform.h"
+ #include "third_party/blink/public/platform/web_string.h"
+ #include "third_party/blink/public/platform/web_url.h"
+@@ -94,6 +99,78 @@
+ // so treat as append-only.
+ enum class RtcpMux { kDisabled, kEnabled, kNoMedia, kMax };
+ 
++// fp-patches: rewrite the IP-bearing SDP lines of |sdp| to the
++// --fingerprint-webrtc-ip value. Returns |sdp| unchanged when the spoof is
++// inactive (fingerprinting off, switch absent/empty, non-ASCII value).
++// Semantics (spec patches/22-webrtc-candidate-sdp.md):
++// - "o=" lines: the "IN IP4 " (or "IN IP6 ") addrtype+address tail is
++//   replaced; IPv6 lines are converted to the IPv4 form with the spoof.
++// - "c=IN IP4 "/"c=IN IP6 " lines: become "c=IN IP4 <spoof>".
++// - "a=candidate:" lines: re-tokenized; the connection address (token
++//   index 4) and the token after a literal "raddr" token are replaced —
++//   deliberately without the 0.0.0.0/127.0.0.1 exemption the
++//   RTCIceCandidatePlatform object fields keep (vendor asymmetry).
++// - every other line passes through; output is CRLF-terminated.
++std::string MaybeSpoofSdpAddresses(const std::string& sdp) {
++  std::string spoof;
++  if (fingerprint::Enabled() &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          switches::kFingerprintWebrtcIp)) {
++    const std::string value = base::CommandLine::ForCurrentProcess()
++                                  ->GetSwitchValueNative(
++                                      switches::kFingerprintWebrtcIp);
++    if (base::IsStringASCII(value)) {
++      spoof = value;
++    }
++  }
++  if (spoof.empty()) {
++    return sdp;
++  }
++
++  std::istringstream lines(sdp);
++  std::string rebuilt;
++  std::string line;
++  while (std::getline(lines, line, '\n')) {
++    if (!line.empty() && line.back() == '\r') {
++      line.pop_back();
++    }
++    if (line.rfind("o=", 0) == 0) {
++      const size_t ip4 = line.find("IN IP4 ");
++      const size_t ip6 = line.find("IN IP6 ");
++      if (ip4 != std::string::npos) {
++        line = line.substr(0, ip4 + 7) + spoof;
++      } else if (ip6 != std::string::npos) {
++        line = line.substr(0, ip6) + "IN IP4 " + spoof;
++      }
++    } else if (line.rfind("c=IN IP4 ", 0) == 0 ||
++               line.rfind("c=IN IP6 ", 0) == 0) {
++      line = "c=IN IP4 " + spoof;
++    } else if (line.rfind("a=candidate:", 0) == 0) {
++      std::istringstream tokens(line.substr(12));
++      std::string out;
++      std::string token;
++      int index = 0;
++      bool substitute = false;
++      while (tokens >> token) {
++        if (!out.empty()) {
++          out += ' ';
++        }
++        if (index == 4 || substitute) {
++          out += spoof;
++        } else {
++          out += token;
++        }
++        ++index;
++        substitute = (token == "raddr");
++      }
++      line = "a=candidate:" + out;
++    }
++    rebuilt += line;
++    rebuilt += "\r\n";
++  }
++  return rebuilt;
++}
++
+ RTCSessionDescriptionPlatform* CreateWebKitSessionDescription(
+     const std::string& sdp,
+     const std::string& type) {
+@@ -114,6 +191,10 @@
+     return nullptr;
+   }
+ 
++  // fp-patches: rewrite IP-bearing lines before the SDP becomes JS-visible
++  // (RTCPeerConnection.{local,remote,current,pending}Description).
++  sdp = MaybeSpoofSdpAddresses(sdp);
++
+   return CreateWebKitSessionDescription(sdp, native_desc->type());
+ }
+ 

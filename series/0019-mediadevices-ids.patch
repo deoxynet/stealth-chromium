@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 19/33] fingerprint: deterministic enumerateDevices() ids and group ids
+X-Spec: patches/35-mediadevices-ids.md
+X-Files: third_party/blink/renderer/modules/mediastream/media_devices.cc
+
+---
+
+--- a/third_party/blink/renderer/modules/mediastream/media_devices.cc
++++ b/third_party/blink/renderer/modules/mediastream/media_devices.cc
+@@ -17,6 +17,7 @@
+ #include "mojo/public/cpp/bindings/remote.h"
+ #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-blink.h"
+ #include "third_party/blink/public/common/features.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/common/mediastream/media_devices.h"
+ #include "third_party/blink/public/mojom/media/capture_handle_config.mojom-blink.h"
+ #include "third_party/blink/public/mojom/mediastream/media_devices.mojom-blink.h"
+@@ -80,8 +81,24 @@
+ 
+ BASE_FEATURE(kDeviceChangeRequiresPermission, base::FEATURE_ENABLED_BY_DEFAULT);
+ 
++
+ namespace {
+ 
++// fp-patches: 16 lowercase hex chars from the identity-seed hash of
++// |purpose| — mirrors the vendor's HexEncodeLower(hash64(seed + suffix)).
++std::string FingerprintMediaId(const std::string& purpose) {
++  const uint64_t hash = blink::fingerprint::HashFor(purpose);
++  char hex[17];
++  static const char kHexDigits[] = "0123456789abcdef";
++  for (int k = 0; k < 16; ++k) {
++    hex[k] = kHexDigits[(hash >> ((15 - k) * 4)) & 0xF];
++  }
++  hex[16] = '\0';
++  return std::string(hex);
++}
++
++}  // namespace
++
+ template <typename IDLResolvedType>
+ class PromiseResolverCallbacks final : public UserMediaRequest::Callbacks {
+  public:
+@@ -1315,6 +1332,24 @@
+       mojom::blink::MediaDeviceType device_type =
+           static_cast<mojom::blink::MediaDeviceType>(i);
+       WebMediaDeviceInfo device_info = enumeration[i][j];
++
++      // fp-patches: deterministic seed-derived device/group ids. Real host
++      // device topology (ids, counts, grouping) is not exposed; labels keep
++      // their permission-gated stock behavior.
++      if (fingerprint::Enabled()) {
++        const char* class_name =
++            device_type == mojom::blink::MediaDeviceType::kMediaAudioInput
++                ? "audioinput"
++                : (device_type == mojom::blink::MediaDeviceType::kMediaAudioOutput
++                       ? "audiooutput"
++                       : "videoinput");
++        device_info.group_id = FingerprintMediaId(
++            std::string("groupid_") + class_name);
++        device_info.device_id = FingerprintMediaId(
++            std::string("deviceid_") + class_name + "_" +
++            std::to_string(j));
++      }
++
+       String device_label = String::FromUTF8(device_info.label);
+       if (device_type == mojom::blink::MediaDeviceType::kMediaAudioInput ||
+           device_type == mojom::blink::MediaDeviceType::kMediaVideoInput) {

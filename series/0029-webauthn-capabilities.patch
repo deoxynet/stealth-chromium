@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 29] fingerprint: deterministic WebAuthn client capabilities
+X-Spec: patches/25-webauthn-capabilities.md
+X-Files: content/browser/webauth/authenticator_common_impl.cc
+
+---
+
+--- a/content/browser/webauth/authenticator_common_impl.cc
++++ b/content/browser/webauth/authenticator_common_impl.cc
+@@ -95,6 +95,7 @@
+ #include "services/metrics/public/cpp/ukm_builders.h"
+ #include "services/metrics/public/cpp/ukm_recorder.h"
+ #include "services/metrics/public/cpp/ukm_source_id.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/mojom/credentialmanagement/credential_type_flags.mojom.h"
+ #include "third_party/blink/public/mojom/webauthn/authenticator.mojom.h"
+ #include "third_party/boringssl/src/pki/input.h"
+@@ -2019,9 +2020,22 @@
+   barrier_callback.Run(
+       MakeCapability(client_capabilities::kConditionalCreate, true));
+ 
+-  IsHybridTransportSupported(
+-      base::BindOnce(&MakeCapability, client_capabilities::kHybridTransport)
+-          .Then(barrier_callback));
++  // fp-patches: fingerprinted identities always report hybridTransport=true
++  // (spec patches/25-webauthn-capabilities.md). This skips the Bluetooth
++  // adapter query — which leaks the host's Bluetooth environment and adds
++  // a startup timing side effect — and, because InsertIsPPAACapability
++  // computes passkeyPlatformAuthenticator = UVPAA || hybridTransport,
++  // forces that capability true as well. isUVPAA itself keeps reflecting
++  // the real platform authenticator state. The vendor gated on
++  // --fingerprint presence; fp-patches uses the series-wide Enabled().
++  if (blink::fingerprint::Enabled()) {
++    barrier_callback.Run(
++        MakeCapability(client_capabilities::kHybridTransport, true));
++  } else {
++    IsHybridTransportSupported(
++        base::BindOnce(&MakeCapability, client_capabilities::kHybridTransport)
++            .Then(barrier_callback));
++  }
+ 
+   IsUvpaaAvailableInternal(
+       caller_origin,

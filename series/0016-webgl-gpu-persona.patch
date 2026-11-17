@@ -1,0 +1,365 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 16/33] fingerprint: WebGL vendor/renderer persona with NVIDIA model database
+X-Spec: patches/13-webgl-vendor-renderer.md, patches/15-gpu-model-database.md
+X-Files: third_party/blink/renderer/modules/webgl/gpu_fingerprint.h third_party/blink/renderer/modules/webgl/gpu_fingerprint.cc third_party/blink/renderer/modules/webgl/BUILD.gn third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+
+---
+
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+@@ -53,6 +53,7 @@
+ #include "media/renderers/paint_canvas_video_renderer.h"
+ #include "third_party/blink/public/common/features.h"
+ #include "third_party/blink/public/common/fingerprint/fingerprint.h"
++#include "third_party/blink/renderer/modules/webgl/gpu_fingerprint.h"
+ #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
+ #include "third_party/blink/public/mojom/gpu/gpu.mojom-blink.h"
+ #include "third_party/blink/public/platform/platform.h"
+@@ -1395,6 +1396,33 @@
+       max_cube_map_texture_size_, max_cube_map_texture_size_, 1);
+   max_renderbuffer_size_ = 0;
+   ContextGL()->GetIntegerv(GL_MAX_RENDERBUFFER_SIZE, &max_renderbuffer_size_);
++
++  // fp-patches: persona GPU limits. Real hardware report stays untouched
++  // internally; only the JS-visible cached limits are adjusted.
++  if (IsFingerprintGpuActive()) {
++    const std::string platform = ResolveFingerprintGpuPlatform();
++    if (platform == "macos") {
++      max_texture_size_ = std::max(max_texture_size_, 16384);
++      max_renderbuffer_size_ = std::max(max_renderbuffer_size_, 16384);
++      max_viewport_dims_[0] = std::max(max_viewport_dims_[0], 16384);
++      max_viewport_dims_[1] = std::max(max_viewport_dims_[1], 16384);
++    } else if (platform == "linux") {
++      const std::string renderer = GetGLRendererStringForFingerprint();
++      const bool big_gpu = renderer.find("NVIDIA") != std::string::npos ||
++                           renderer.find("AMD") != std::string::npos ||
++                           renderer.find("Radeon") != std::string::npos;
++      max_texture_size_ = std::max(max_texture_size_, big_gpu ? 32768 : 16384);
++      max_renderbuffer_size_ =
++          std::max(max_renderbuffer_size_, big_gpu ? 32768 : 16384);
++      max_viewport_dims_[0] = std::max(max_viewport_dims_[0], 32767);
++      max_viewport_dims_[1] = std::max(max_viewport_dims_[1], 32767);
++    } else {  // windows persona
++      max_texture_size_ = std::max(max_texture_size_, 16384);
++      max_renderbuffer_size_ = std::max(max_renderbuffer_size_, 32767);
++      max_viewport_dims_[0] = std::max(max_viewport_dims_[0], 32767);
++      max_viewport_dims_[1] = std::max(max_viewport_dims_[1], 32767);
++    }
++  }
+ 
+   // These two values from EXT_draw_buffers are lazily queried.
+   max_draw_buffers_ = 0;
+@@ -3849,10 +3877,16 @@
+     case GL_LINE_WIDTH:
+       return GetFloatParameter(script_state, pname);
+     case GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS:
++      if (IsFingerprintGpuActive()) {
++        return WebGLAny(script_state, 32);
++      }
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_CUBE_MAP_TEXTURE_SIZE:
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_FRAGMENT_UNIFORM_VECTORS:
++      if (IsFingerprintGpuActive()) {
++        return WebGLAny(script_state, 1024);
++      }
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_RENDERBUFFER_SIZE:
+       return GetIntParameter(script_state, pname);
+@@ -3861,12 +3895,21 @@
+     case GL_MAX_TEXTURE_SIZE:
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_VARYING_VECTORS:
++      if (IsFingerprintGpuActive()) {
++        return WebGLAny(script_state, 30);
++      }
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_VERTEX_ATTRIBS:
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS:
++      if (IsFingerprintGpuActive()) {
++        return WebGLAny(script_state, 16);
++      }
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_VERTEX_UNIFORM_VECTORS:
++      if (IsFingerprintGpuActive()) {
++        return WebGLAny(script_state, 4095);
++      }
+       return GetIntParameter(script_state, pname);
+     case GL_MAX_VIEWPORT_DIMS:
+       return GetWebGLIntArrayParameter(script_state, pname);
+@@ -3979,6 +4022,13 @@
+       return ScriptValue::CreateNull(script_state->GetIsolate());
+     case WebGLDebugRendererInfo::kUnmaskedRendererWebgl:
+       if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
++        // fp-patches: persona renderer string when GPU spoofing is active.
++        if (IsFingerprintGpuActive()) {
++          const std::string renderer = GetGLRendererStringForFingerprint();
++          if (!renderer.empty()) {
++            return WebGLAny(script_state, String::FromUTF8(renderer));
++          }
++        }
+         return WebGLAny(script_state,
+                         String(ContextGL()->GetString(GL_RENDERER)));
+       }
+@@ -3988,6 +4038,13 @@
+       return ScriptValue::CreateNull(script_state->GetIsolate());
+     case WebGLDebugRendererInfo::kUnmaskedVendorWebgl:
+       if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
++        // fp-patches: persona vendor string when GPU spoofing is active.
++        if (IsFingerprintGpuActive()) {
++          const std::string vendor = GetGLVendorStringForFingerprint();
++          if (!vendor.empty()) {
++            return WebGLAny(script_state, String::FromUTF8(vendor));
++          }
++        }
+         return WebGLAny(script_state,
+                         String(ContextGL()->GetString(GL_VENDOR)));
+       }
+--- /dev/null
++++ b/third_party/blink/renderer/modules/webgl/gpu_fingerprint.h
+@@ -0,0 +1,32 @@
++// Copyright 2026 The fp-patches Authors
++// Use of this source code is governed by a GPLv3 license that can be
++// found in the LICENSE file of the fp-patches distribution.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGL_GPU_FINGERPRINT_H_
++#define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGL_GPU_FINGERPRINT_H_
++
++#include <string>
++
++namespace blink {
++
++// Identity-seed-driven WebGL GPU persona. When none of
++// --fingerprint-gpu-vendor / --fingerprint-gpu-renderer / --fingerprint is
++// present every getter returns the empty string and callers fall back to
++// stock GPU values.
++bool IsFingerprintGpuActive();
++
++// Lowercased --fingerprint-platform, default "linux" when absent (the
++// vendor/renderer pools pick per-OS strings).
++std::string ResolveFingerprintGpuPlatform();
++
++// UNMASKED_VENDOR_WEBGL persona; "" = no spoof.
++std::string GetGLVendorStringForFingerprint();
++
++// UNMASKED_RENDERER_WEBGL persona (ANGLE-style string derived from the
++// embedded NVIDIA model database, or an Apple SoC on the macOS persona);
++// "" = no spoof.
++std::string GetGLRendererStringForFingerprint();
++
++}  // namespace blink
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGL_GPU_FINGERPRINT_H_
+--- /dev/null
++++ b/third_party/blink/renderer/modules/webgl/gpu_fingerprint.cc
+@@ -0,0 +1,196 @@
++// Copyright 2026 The fp-patches Authors
++// Use of this source code is governed by a GPLv3 license that can be
++// found in the LICENSE file of the fp-patches distribution.
++
++#include "third_party/blink/renderer/modules/webgl/gpu_fingerprint.h"
++
++#include <cstdint>
++#include <vector>
++
++#include "base/command_line.h"
++#include "base/strings/string_util.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
++#include "third_party/blink/public/common/switches.h"
++
++namespace blink {
++
++namespace {
++
++// NVIDIA desktop/laptop models with real PCI device IDs (RTX 30 = GA10x,
++// RTX 40 = AD10x, RTX 50 = GB20x). Table lineage: ungoogled-chromium.
++struct GpuModel {
++  const char* name;
++  const char* device_id;
++};
++
++constexpr GpuModel kNvidiaGpuModels[] = {
++    {"GeForce RTX 3050", "0x00002507"},
++    {"GeForce RTX 3050", "0x00002582"},
++    {"GeForce RTX 3050 6GB Laptop GPU", "0x000025EC"},
++    {"GeForce RTX 3050 Laptop GPU", "0x000025A2"},
++    {"GeForce RTX 3050 Ti Laptop GPU", "0x000025A0"},
++    {"GeForce RTX 3060", "0x00002487"},
++    {"GeForce RTX 3060", "0x00002503"},
++    {"GeForce RTX 3060", "0x00002504"},
++    {"GeForce RTX 3060 Laptop GPU", "0x00002520"},
++    {"GeForce RTX 3060 Laptop GPU", "0x00002560"},
++    {"GeForce RTX 3060 Ti", "0x00002486"},
++    {"GeForce RTX 3060 Ti", "0x00002489"},
++    {"GeForce RTX 3060 Ti", "0x000024C9"},
++    {"GeForce RTX 3070", "0x00002484"},
++    {"GeForce RTX 3070", "0x00002488"},
++    {"GeForce RTX 3070 Ti", "0x00002482"},
++    {"GeForce RTX 3070 Ti Laptop GPU", "0x000024A0"},
++    {"GeForce RTX 3080", "0x00002206"},
++    {"GeForce RTX 3080", "0x0000220A"},
++    {"GeForce RTX 3080", "0x00002216"},
++    {"GeForce RTX 3080 Laptop GPU", "0x0000249C"},
++    {"GeForce RTX 3080 Laptop GPU", "0x000024DC"},
++    {"GeForce RTX 3080 Ti", "0x00002208"},
++    {"GeForce RTX 3080 Ti Laptop GPU", "0x00002420"},
++    {"GeForce RTX 3080 Ti Laptop GPU", "0x00002460"},
++    {"GeForce RTX 3090", "0x00002204"},
++    {"GeForce RTX 3090 Ti", "0x00002203"},
++    {"GeForce RTX 4050 Laptop GPU", "0x000028A1"},
++    {"GeForce RTX 4050 Laptop GPU", "0x000028E1"},
++    {"GeForce RTX 4060", "0x00002882"},
++    {"GeForce RTX 4060 Laptop GPU", "0x000028A0"},
++    {"GeForce RTX 4060 Laptop GPU", "0x000028E0"},
++    {"GeForce RTX 4060 Ti", "0x00002803"},
++    {"GeForce RTX 4060 Ti", "0x00002805"},
++    {"GeForce RTX 4070", "0x00002786"},
++    {"GeForce RTX 4070 Laptop GPU", "0x00002820"},
++    {"GeForce RTX 4070 Laptop GPU", "0x00002860"},
++    {"GeForce RTX 4070 SUPER", "0x00002783"},
++    {"GeForce RTX 4070 Ti", "0x00002782"},
++    {"GeForce RTX 4070 Ti SUPER", "0x00002705"},
++    {"GeForce RTX 4080", "0x00002704"},
++    {"GeForce RTX 4080 Laptop GPU", "0x000027A0"},
++    {"GeForce RTX 4080 Laptop GPU", "0x000027E0"},
++    {"GeForce RTX 4080 SUPER", "0x00002702"},
++    {"GeForce RTX 4090", "0x00002684"},
++    {"GeForce RTX 4090 Laptop GPU", "0x00002717"},
++    {"GeForce RTX 4090 Laptop GPU", "0x00002757"},
++    {"GeForce RTX 5070", "0x00002F04"},
++    {"GeForce RTX 5070 Ti", "0x00002C05"},
++    {"GeForce RTX 5070 Ti Laptop GPU", "0x00002F18"},
++    {"GeForce RTX 5070 Ti Laptop GPU", "0x00002F58"},
++    {"GeForce RTX 5080", "0x00002C02"},
++    {"GeForce RTX 5080 Laptop GPU", "0x00002C19"},
++    {"GeForce RTX 5080 Laptop GPU", "0x00002C59"},
++    {"GeForce RTX 5090", "0x00002B85"},
++    {"GeForce RTX 5090 Laptop GPU", "0x00002C18"},
++    {"GeForce RTX 5090 Laptop GPU", "0x00002C58"},
++};
++
++constexpr size_t kNvidiaGpuModelCount = std::size(kNvidiaGpuModels);
++
++// Apple SoCs for the macOS persona.
++constexpr const char* kAppleGpuModels[] = {
++    "M1", "M1 Pro", "M2", "M2 Max", "M2 Pro",
++    "M3", "M3 Max", "M3 Pro", "M4", "M4 Max", "M4 Pro",
++};
++
++constexpr char kWindowsVendorString[] = "NVIDIA";
++constexpr char kLinuxVendorString[] = "NVIDIA Corporation";
++constexpr char kLinuxGpuSuffix[] = "/PCIe/SSE2, OpenGL 4.5.0 NVIDIA 565.77";
++
++}  // namespace
++
++bool IsFingerprintGpuActive() {
++  const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++  return cmd.HasSwitch(switches::kFingerprintGpuRenderer) ||
++         cmd.HasSwitch(switches::kFingerprintGpuVendor) ||
++         cmd.HasSwitch(switches::kFingerprint);
++}
++
++std::string ResolveFingerprintGpuPlatform() {
++  const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++  if (cmd.HasSwitch(switches::kFingerprintPlatform)) {
++    const std::string value =
++        cmd.GetSwitchValueASCII(switches::kFingerprintPlatform);
++    if (base::IsStringASCII(value)) {
++      return base::ToLowerASCII(value);
++    }
++  }
++  return "linux";
++}
++
++std::string GetGLVendorStringForFingerprint() {
++  const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++  if (cmd.HasSwitch(switches::kFingerprintGpuVendor)) {
++    const std::string value =
++        cmd.GetSwitchValueASCII(switches::kFingerprintGpuVendor);
++    return base::IsStringASCII(value) ? value : std::string();
++  }
++  if (!cmd.HasSwitch(switches::kFingerprint)) {
++    return std::string();
++  }
++  const std::string platform = ResolveFingerprintGpuPlatform();
++  if (platform == "macos") {
++    return "Google Inc. (Apple)";
++  }
++  if (platform == "linux") {
++    return "Google Inc. (NVIDIA Corporation)";
++  }
++  return "Google Inc. (NVIDIA)";
++}
++
++std::string GetGLRendererStringForFingerprint() {
++  const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++  std::string value;
++  bool have_renderer = false;
++  if (cmd.HasSwitch(switches::kFingerprintGpuRenderer)) {
++    value = cmd.GetSwitchValueASCII(switches::kFingerprintGpuRenderer);
++    if (!base::IsStringASCII(value)) {
++      value.clear();
++    }
++    have_renderer = true;
++  } else if (cmd.HasSwitch(switches::kFingerprint)) {
++    value = fingerprint::SeedString();
++  } else {
++    return std::string();
++  }
++
++  const std::string platform = ResolveFingerprintGpuPlatform();
++
++  if (have_renderer) {
++    if (base::StartsWith(value, "ANGLE (")) {
++      return value;
++    }
++    if (platform == "windows" || platform == "linux") {
++      for (const GpuModel& model : kNvidiaGpuModels) {
++        if (value.find(model.name) != std::string::npos) {
++          if (platform == "linux") {
++            return "ANGLE (" + std::string(kLinuxVendorString) + ", " + value +
++                   kLinuxGpuSuffix + ")";
++          }
++          return "ANGLE (" + std::string(kWindowsVendorString) + ", " + value +
++                 " (" + model.device_id +
++                 ") Direct3D11 vs_5_0 ps_5_0, D3D11)";
++        }
++      }
++    }
++    return value;
++  }
++
++  // Seed path: deterministic index into the model database.
++  const uint32_t hash =
++      static_cast<uint32_t>(fingerprint::HashFor("gpu_renderer"));
++  if (platform == "macos") {
++    return "ANGLE (Apple, ANGLE Metal Renderer: Apple " +
++           std::string(kAppleGpuModels[hash % std::size(kAppleGpuModels)]) +
++           ", Unspecified Version)";
++  }
++  const GpuModel& model = kNvidiaGpuModels[hash % kNvidiaGpuModelCount];
++  if (platform == "linux") {
++    return "ANGLE (" + std::string(kLinuxVendorString) + ", NVIDIA " +
++           model.name + kLinuxGpuSuffix + ")";
++  }
++  // Windows persona: full ANGLE D3D11 renderer string.
++  return "ANGLE (" + std::string(kWindowsVendorString) + ", NVIDIA " +
++         model.name + " (" + model.device_id +
++         ") Direct3D11 vs_5_0 ps_5_0, D3D11)";
++}
++
++}  // namespace blink
+--- a/third_party/blink/renderer/modules/webgl/BUILD.gn
++++ b/third_party/blink/renderer/modules/webgl/BUILD.gn
+@@ -43,6 +43,8 @@
+     "ext_texture_compression_rgtc.h",
+     "ext_texture_filter_anisotropic.cc",
+     "ext_texture_filter_anisotropic.h",
++    "gpu_fingerprint.cc",
++    "gpu_fingerprint.h",
+     "ext_texture_mirror_clamp_to_edge.cc",
+     "ext_texture_mirror_clamp_to_edge.h",
+     "ext_texture_norm_16.cc",

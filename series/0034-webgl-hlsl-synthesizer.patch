@@ -1,0 +1,365 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 34] fingerprint: WEBGL_debug_shaders translated-source synthesizer
+X-Spec: patches/13-webgl-vendor-renderer.md
+X-Files: third_party/blink/renderer/modules/webgl/hlsl_synthesizer.h third_party/blink/renderer/modules/webgl/webgl_debug_shaders.cc
+
+---
+
+--- /dev/null
++++ b/third_party/blink/renderer/modules/webgl/hlsl_synthesizer.h
+@@ -0,0 +1,327 @@
++// Copyright 2026 The fp-patches Authors
++// Use of this source code is governed by a GPLv3 license that can be
++// found in the LICENSE file of the fp-patches distribution.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGL_HLSL_SYNTHESIZER_H_
++#define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGL_HLSL_SYNTHESIZER_H_
++
++#include <cstdlib>
++#include <string>
++#include <vector>
++
++#include "base/command_line.h"
++#include "base/strings/string_util.h"
++#include "gpu/GLES2/gl2.h"
++#include "third_party/blink/public/common/switches.h"
++
++// fp-patches: deterministic ANGLE-D3D11-style HLSL translation for
++// WEBGL_debug_shaders.getTranslatedShaderSource() (spec
++// patches/13-webgl-vendor-renderer.md). The windows persona claims the
++// ANGLE D3D11 backend, so its translated sources are HLSL; instead of
++// leaking the real backend's translation we rebuild a persona-plausible
++// one from the GLSL source. Line-by-line text synthesis, a pure function
++// of (source, shader type) — same shader always yields the same text.
++
++namespace blink {
++namespace fingerprint {
++
++// True when the translation persona is "windows" (lowercased
++// --fingerprint-platform; absent/non-ASCII defaults to "windows", the
++// vendor's GetFingerprintPlatform() semantics for this call site).
++inline bool PersonaUsesHlslTranslation() {
++  const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++  if (cmd.HasSwitch(switches::kFingerprintPlatform)) {
++    const std::string value =
++        cmd.GetSwitchValueASCII(switches::kFingerprintPlatform);
++    if (base::IsStringASCII(value)) {
++      return base::ToLowerASCII(value) == "windows";
++    }
++  }
++  return true;
++}
++
++namespace hlsl_synth {
++
++struct Decl {
++  std::string type;   // HLSL type ("float4", "float4x4", ...).
++  std::string name;   // GLSL identifier.
++  int registers = 1;  // cbuffer registers consumed.
++};
++
++inline bool IsSpace(char c) {
++  return c == ' ' || c == '\t' || c == '\r';
++}
++
++inline std::vector<std::string> Tokenize(const std::string& line) {
++  std::vector<std::string> tokens;
++  std::string current;
++  for (const char c : line) {
++    if (IsSpace(c)) {
++      if (!current.empty()) {
++        tokens.push_back(current);
++        current.clear();
++      }
++    } else {
++      current.push_back(c);
++    }
++  }
++  if (!current.empty()) {
++    tokens.push_back(current);
++  }
++  return tokens;
++}
++
++// GLSL type token -> HLSL type; nullptr when the token is not a type.
++inline const char* MapType(const std::string& token) {
++  static constexpr const struct {
++    const char* glsl;
++    const char* hlsl;
++  } kTypeMap[] = {
++      {"float", "float"},        {"int", "int"},       {"bool", "bool"},
++      {"vec2", "float2"},        {"vec3", "float3"},   {"vec4", "float4"},
++      {"ivec2", "int2"},         {"ivec3", "int3"},    {"ivec4", "int4"},
++      {"bvec2", "bool2"},        {"bvec3", "bool3"},   {"bvec4", "bool4"},
++      {"mat2", "float2x2"},      {"mat3", "float3x3"}, {"mat4", "float4x4"},
++      {"sampler2D", "sampler2D"}, {"samplerCube", "samplerCube"},
++  };
++  for (const auto& entry : kTypeMap) {
++    if (token == entry.glsl) {
++      return entry.hlsl;
++    }
++  }
++  return nullptr;
++}
++
++inline bool IsPrecisionToken(const std::string& token) {
++  return token == "lowp" || token == "mediump" || token == "highp";
++}
++
++// "position[4];", "texcoord;" -> {"position", 4} / {"texcolor", 1}.
++inline Decl ParseDecl(const std::string& hlsl_type,
++                      const std::string& raw_name) {
++  Decl decl;
++  decl.type = hlsl_type;
++  size_t length = 1;
++  size_t end = raw_name.find_first_of("[=,;");
++  decl.name = raw_name.substr(0, end == std::string::npos ? raw_name.size()
++                                                          : end);
++  const size_t bracket = raw_name.find('[');
++  if (bracket != std::string::npos) {
++    const size_t close = raw_name.find(']', bracket);
++    if (close != std::string::npos && close > bracket + 1) {
++      length = static_cast<size_t>(
++          std::atoi(raw_name.substr(bracket + 1, close - bracket - 1).c_str()));
++      if (length == 0) {
++        length = 1;
++      }
++    }
++  }
++  if (hlsl_type == "float2x2") {
++    decl.registers = 2;
++  } else if (hlsl_type == "float3x3") {
++    decl.registers = 3;
++  } else if (hlsl_type == "float4x4") {
++    decl.registers = 4;
++  }
++  decl.registers *= static_cast<int>(length);
++  return decl;
++}
++
++}  // namespace hlsl_synth
++
++// Rebuilds |glsl_source| as an ANGLE-D3D11-flavored HLSL translation.
++// Deliberately simplified relative to the vendor's ~12 KB generator: the
++// observable contract (deterministic HLSL-looking text built from the
++// GLSL declarations, with ANGLE's boilerplate constants) is preserved.
++inline std::string GenerateHlslForShader(const std::string& glsl_source,
++                                         unsigned shader_type) {
++  using hlsl_synth::Decl;
++  using hlsl_synth::IsPrecisionToken;
++  using hlsl_synth::MapType;
++  using hlsl_synth::ParseDecl;
++  using hlsl_synth::Tokenize;
++
++  const bool is_vertex = shader_type != GL_FRAGMENT_SHADER;
++
++  std::vector<Decl> attributes;   // VS_INPUT (vertex "attribute"/"in").
++  std::vector<Decl> varyings;     // VS_OUTPUT / PS_INPUT interface.
++  std::vector<Decl> uniforms;     // _Globals cbuffer members.
++  std::vector<Decl> samplers;     // SamplerState bindings.
++  std::vector<Decl> frag_outputs; // PS_OUTPUT members (fragment "out").
++  std::vector<std::string> body;
++
++  size_t line_start = 0;
++  while (line_start <= glsl_source.size()) {
++    size_t line_end = glsl_source.find('\n', line_start);
++    if (line_end == std::string::npos) {
++      line_end = glsl_source.size();
++    }
++    const std::string line =
++        glsl_source.substr(line_start, line_end - line_start);
++    line_start = line_end + 1;
++
++    const std::vector<std::string> tokens = Tokenize(line);
++    if (tokens.empty() || tokens[0].front() == '#') {
++      continue;  // preprocessor directives are not carried over
++    }
++    if (tokens[0] == "precision" || tokens[0] == "invariant") {
++      continue;  // precision/invariant statements are consumed
++    }
++    if (tokens[0] == "attribute" && tokens.size() >= 3 && MapType(tokens[1])) {
++      Decl decl = ParseDecl(MapType(tokens[1]), tokens[2]);
++      decl.name = "attribute_" + decl.name;
++      attributes.push_back(decl);
++      continue;
++    }
++    if (tokens[0] == "varying" && tokens.size() >= 3 && MapType(tokens[1])) {
++      varyings.push_back(ParseDecl(MapType(tokens[1]), tokens[2]));
++      continue;
++    }
++    if (tokens[0] == "uniform" && tokens.size() >= 3 && MapType(tokens[1])) {
++      Decl decl = ParseDecl(MapType(tokens[1]), tokens[2]);
++      if (decl.type.rfind("sampler", 0) == 0) {
++        samplers.push_back(decl);
++      } else {
++        uniforms.push_back(decl);
++      }
++      continue;
++    }
++    if (tokens[0] == "in" && tokens.size() >= 3 && MapType(tokens[1])) {
++      Decl decl = ParseDecl(MapType(tokens[1]), tokens[2]);
++      if (is_vertex) {
++        decl.name = "attribute_" + decl.name;
++        attributes.push_back(decl);
++      } else {
++        varyings.push_back(decl);
++      }
++      continue;
++    }
++    if (tokens[0] == "out" && tokens.size() >= 3 && MapType(tokens[1])) {
++      Decl decl = ParseDecl(MapType(tokens[1]), tokens[2]);
++      if (is_vertex) {
++        varyings.push_back(decl);
++      } else {
++        frag_outputs.push_back(decl);
++      }
++      continue;
++    }
++
++    // Ordinary statement / function line: keep it, with precision
++    // qualifiers dropped and GLSL types mapped to HLSL ones.
++    std::string rewritten;
++    for (const std::string& token : tokens) {
++      if (IsPrecisionToken(token)) {
++        continue;
++      }
++      if (!rewritten.empty()) {
++        rewritten += ' ';
++      }
++      if (const char* mapped = MapType(token)) {
++        rewritten += mapped;
++      } else {
++        rewritten += token;
++      }
++    }
++    if (!rewritten.empty()) {
++      body.push_back(rewritten);
++    }
++  }
++
++  std::string out;
++  out += "#pragma warning( disable: 3556 3571 )\n";
++  out += "#ifdef ANGLE_ENABLE_LOOP_FLATTEN\n";
++  out += "#define LOOP [loop]\n";
++  out += "#define FLATTEN [flatten]\n";
++  out += "#else\n";
++  out += "#define LOOP\n";
++  out += "#define FLATTEN\n";
++  out += "#endif\n";
++  out += "// INITIAL HLSL BEGIN\n\n";
++
++  if (is_vertex) {
++    out += "@@ VERTEX ATTRIBUTES @@\n";
++    out += "struct VS_INPUT\n{\n";
++    out += "    float3 dx_Position : POSITION0;\n";
++    for (size_t i = 0; i < attributes.size(); ++i) {
++      out += "    " + attributes[i].type + " " + attributes[i].name +
++             " : TEXCOORD" + std::to_string(i) + ";\n";
++    }
++    out += "};\n";
++    out += "@@ VERTEX OUTPUT @@\n\n";
++    out += "struct VS_OUTPUT\n{\n";
++    for (size_t i = 0; i < varyings.size(); ++i) {
++      out += "    " + varyings[i].type + " " + varyings[i].name +
++             " : TEXCOORD" + std::to_string(i) + ";\n";
++    }
++    out += "    float4 gl_Position : SV_POSITION;\n";
++    out += "};\n";
++  } else {
++    out += "@@ PIXEL ATTRIBUTES @@\n";
++    out += "struct PS_INPUT\n{\n";
++    if (varyings.empty()) {
++      out += "    float4 dx_VideoSample : TEXCOORD0;\n";
++    }
++    for (size_t i = 0; i < varyings.size(); ++i) {
++      out += "    " + varyings[i].type + " " + varyings[i].name +
++             " : TEXCOORD" + std::to_string(i) + ";\n";
++    }
++    out += "};\n";
++    out += "@@ PIXEL OUTPUT @@\n\n";
++    out += "struct PS_OUTPUT\n{\n";
++    if (frag_outputs.empty()) {
++      out += "    float4 color : SV_TARGET0;\n";
++    }
++    for (size_t i = 0; i < frag_outputs.size(); ++i) {
++      out += "    " + frag_outputs[i].type + " " + frag_outputs[i].name +
++             " : SV_TARGET" + std::to_string(i) + ";\n";
++    }
++    out += "};\n";
++  }
++
++  out += "cbuffer DriverConstants : register(b1)\n{\n";
++  out += "    float4 dx_ViewAdjust : packoffset(c1);\n";
++  out += is_vertex ? "    float4 dx_ViewCoords : packoffset(c1);\n"
++                   : "    float4 dx_ViewCoords : packoffset(c2);\n";
++  out += "    float3 dx_DepthFront : packoffset(c2);\n";
++  out += "    float2 dx_ViewScale  : packoffset(c3);\n";
++  out += "    float clipControlOrigin : packoffset(c3.z);\n";
++  out += "    float clipControlZeroToOne : packoffset(c3.w);\n";
++  out += "};\n";
++
++  out += "cbuffer _Globals : register(b0)\n{\n";
++  int c_register = 0;
++  for (const Decl& uniform : uniforms) {
++    out += "    " + uniform.type + " " + uniform.name + " : packoffset(c" +
++           std::to_string(c_register) + ");\n";
++    c_register += uniform.registers;
++  }
++  out += "};\n";
++
++  for (size_t i = 0; i < samplers.size(); ++i) {
++    out += "uniform SamplerState sampler_" + samplers[i].name +
++           " : register(s" + std::to_string(i) + ");\n";
++  }
++
++  if (is_vertex) {
++    out += "static float4 gl_Position = float4(0, 0, 0, 0);\n";
++    out += "static float4 gl_Color[1] = { float4(0, 0, 0, 0) };\n";
++  } else {
++    out += "static float4 gl_FragColor = float4(0, 0, 0, 0);\n";
++  }
++
++  out += "@@ MAIN PROLOGUE @@\n";
++  out += is_vertex ? "VS_OUTPUT main(VS_INPUT input){\n"
++                   : "PS_OUTPUT main(PS_INPUT input){\n";
++  for (const std::string& line : body) {
++    out += "    " + line + "\n";
++  }
++  out += "    return generateOutput(input);\n";
++  out += "}\n";
++  out += "// INITIAL HLSL END\n";
++  return out;
++}
++
++}  // namespace fingerprint
++}  // namespace blink
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGL_HLSL_SYNTHESIZER_H_
+--- a/third_party/blink/renderer/modules/webgl/webgl_debug_shaders.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_debug_shaders.cc
+@@ -26,6 +26,8 @@
+ #include "third_party/blink/renderer/modules/webgl/webgl_debug_shaders.h"
+ 
+ #include "third_party/blink/renderer/modules/webgl/gl_string_query.h"
++#include "third_party/blink/renderer/modules/webgl/gpu_fingerprint.h"
++#include "third_party/blink/renderer/modules/webgl/hlsl_synthesizer.h"
+ #include "third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.h"
+ #include "third_party/blink/renderer/modules/webgl/webgl_shader.h"
+ #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+@@ -50,6 +52,14 @@
+   if (!scoped.Context()->ValidateWebGLObject("getTranslatedShaderSource",
+                                              shader))
+     return "";
++  // fp-patches: the windows persona claims the ANGLE D3D11 backend, whose
++  // translations are HLSL. Serve a deterministic ANGLE-style HLSL
++  // translation synthesized from the GLSL source instead of leaking the
++  // real backend's output; other personas keep the real translation.
++  if (IsFingerprintGpuActive() && fingerprint::PersonaUsesHlslTranslation()) {
++    return String::FromUTF8(fingerprint::GenerateHlslForShader(
++        shader->Source().Utf8(), shader->GetType()));
++  }
+   GLStringQuery query(scoped.Context()->ContextGL());
+   return query.Run<GLStringQuery::TranslatedShaderSourceANGLE>(
+       shader->Object());

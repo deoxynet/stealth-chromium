@@ -1,0 +1,241 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 12/33] fingerprint: deterministic canvas image-data pixel noise
+X-Spec: patches/03-canvas-image-data-noise.md
+X-Files: third_party/blink/renderer/platform/graphics/static_bitmap_image.h third_party/blink/renderer/platform/graphics/static_bitmap_image.cc third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc third_party/blink/renderer/platform/image-encoders/image_encoder.cc third_party/blink/renderer/core/html/canvas/canvas_async_blob_creator.cc third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+
+---
+
+--- a/third_party/blink/renderer/platform/graphics/static_bitmap_image.h
++++ b/third_party/blink/renderer/platform/graphics/static_bitmap_image.h
+@@ -37,6 +37,14 @@
+ 
+   StaticBitmapImage(ImageOrientation orientation) : orientation_(orientation) {}
+ 
++  // fp-patches: perturbs at most 10 pixels by one LSB per color channel,
++  // deterministically per identity seed. Applied to canvas/WebGL readback
++  // data (getImageData, toDataURL, toBlob, readPixels).
++  static void ShuffleSubchannelColorData(const void* addr,
++                                         const SkImageInfo& info,
++                                         int src_x,
++                                         int src_y);
++
+   bool IsStaticBitmapImage() const override { return true; }
+ 
+   // Methods overridden by all sub-classes
+--- a/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
++++ b/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
+@@ -4,7 +4,10 @@
+ 
+ #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
+ 
++#include <algorithm>
++
+ #include "base/numerics/checked_math.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "gpu/command_buffer/client/gles2_interface.h"
+ #include "third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h"
+ #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
+@@ -37,6 +40,98 @@
+       orientation);
+ }
+ 
++// static
++void StaticBitmapImage::ShuffleSubchannelColorData(const void* addr,
++                                                   const SkImageInfo& info,
++                                                   int src_x,
++                                                   int src_y) {
++  const int w = info.width() - src_x;
++  const int h = info.height() - src_y;
++  // Skip tiny images (and zero-sized readbacks).
++  if (w < 8 || h < 8) {
++    return;
++  }
++
++  const size_t row_bytes = info.minRowBytes();
++  const long total = static_cast<long>(w) * h;
++  const int count = static_cast<int>(std::min(total, 10L));
++
++  // Position stream: LCG-stepped from the seed hash (vendor constants).
++  const uint32_t pos_seed =
++      static_cast<uint32_t>(fingerprint::HashFor("canvas_pos"));
++
++  for (int i = 0; i < count; ++i) {
++    const uint32_t r =
++        ((static_cast<uint32_t>(i) ^ pos_seed) * 0x17385CA9u + 0x47502932u) %
++        static_cast<uint32_t>(total);
++    const int x = static_cast<int>(r % w);
++    const int y = static_cast<int>(r / w);
++    const uint32_t pixel_hash = static_cast<uint32_t>(fingerprint::HashFor(
++        "canvas_px_" + std::to_string(x) + "_" + std::to_string(y)));
++    const bool b0 = pixel_hash & 1;
++    const bool b1 = (pixel_hash >> 1) & 1;
++    const bool b2 = (pixel_hash >> 2) & 1;
++
++    switch (info.colorType()) {
++      case kAlpha_8_SkColorType:
++      case kGray_8_SkColorType: {
++        uint8_t* pixel = const_cast<uint8_t*>(static_cast<const uint8_t*>(
++            addr)) + y * row_bytes + x;
++        *pixel = static_cast<uint8_t>((*pixel & 0xFE) | b2);
++        break;
++      }
++      case kRGB_565_SkColorType: {
++        uint16_t* pixel = reinterpret_cast<uint16_t*>(
++            const_cast<uint8_t*>(static_cast<const uint8_t*>(addr)) +
++            y * row_bytes + x * 2);
++        const unsigned r5 = (*pixel >> 11) & 0x1F;
++        const unsigned g6 = (*pixel >> 5) & 0x3F;
++        const unsigned b5 = (*pixel) & 0x1F;
++        // Expand to 8 bits, clear the LSB, install the noise bit, truncate.
++        const unsigned r8 = (((r5 << 3) | (r5 >> 2)) & 0x1E) | b0;
++        const unsigned g8 = (((g6 << 2) | (g6 >> 4)) & 0x3E) | b1;
++        const unsigned b8 = (((b5 << 3) | (b5 >> 2)) & 0x1E) | b2;
++        *pixel = static_cast<uint16_t>((r8 << 11) | (g8 << 5) | b8);
++        break;
++      }
++      case kARGB_4444_SkColorType: {
++        uint16_t* pixel = reinterpret_cast<uint16_t*>(
++            const_cast<uint8_t*>(static_cast<const uint8_t*>(addr)) +
++            y * row_bytes + x * 2);
++        const uint16_t pv = *pixel;
++        *pixel = static_cast<uint16_t>((pv & 0xEE0F) | (b0 << 12) |
++                                       (b1 << 8) | (b2 << 4));
++        break;
++      }
++      case kRGBA_8888_SkColorType: {
++        uint32_t* pixel = reinterpret_cast<uint32_t*>(
++            const_cast<uint8_t*>(static_cast<const uint8_t*>(addr)) +
++            y * row_bytes + x * 4);
++        const uint32_t p = *pixel;
++        *pixel = (p & 0xFF000000u) | ((((p) & 0x000000FFu) & 0xFE) | b2) |
++                 (((((p >> 8) & 0xFF) & 0xFE) | b1) << 8) |
++                 (((((p >> 16) & 0xFF) & 0xFE) | b0) << 16);
++        break;
++      }
++      case kBGRA_8888_SkColorType: {
++        uint32_t* pixel = reinterpret_cast<uint32_t*>(
++            const_cast<uint8_t*>(static_cast<const uint8_t*>(addr)) +
++            y * row_bytes + x * 4);
++        const uint32_t p = *pixel;
++        // B at byte 0, G at byte 1, R at byte 2; alpha preserved.
++        *pixel = (p & 0xFF000000u) | ((((p) & 0xFF) & 0xFE) | b0) |
++                 (((((p >> 8) & 0xFF) & 0xFE) | b1) << 8) |
++                 (((((p >> 16) & 0xFF) & 0xFE) | b2) << 16);
++        break;
++      }
++      default:
++        // Unhandled formats (float, 888x, 101010x...) are skipped without
++        // altering the pixel.
++        continue;
++    }
++  }
++}
++
+ gfx::Size StaticBitmapImage::SizeWithConfig(SizeConfig config) const {
+   gfx::Size size = GetSize();
+   if (config.apply_orientation && orientation_.UsesWidthAsHeight())
+--- a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
++++ b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
+@@ -27,6 +27,7 @@
+ #include "cc/paint/paint_image.h"
+ #include "components/viz/common/resources/shared_image_format_utils.h"
+ #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/common/metrics/document_update_reason.h"
+ #include "third_party/blink/public/mojom/devtools/console_message.mojom-blink-forward.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_canvas_text_align.h"
+@@ -522,6 +523,10 @@
+       SkIRect bounds =
+           snapshot->PaintImageForCurrentFrame().GetSkImageInfo().bounds();
+       DCHECK(!bounds.intersect(SkIRect::MakeXYWH(sx, sy, sw, sh)));
++    } else if (fingerprint::NoiseEnabled()) {
++      // fp-patches: deterministic per-seed pixel noise on readback data.
++      StaticBitmapImage::ShuffleSubchannelColorData(
++          image_data_pixmap.writable_addr(), image_data_pixmap.info(), 0, 0);
+     }
+   }
+ 
+--- a/third_party/blink/renderer/platform/image-encoders/image_encoder.cc
++++ b/third_party/blink/renderer/platform/image-encoders/image_encoder.cc
+@@ -44,6 +44,12 @@
+                           const SkPixmap& src,
+                           ImageEncodingMimeType mime_type,
+                           double quality) {
++  // fp-patches: single choke point for toDataURL/toBlob encoding — perturb
++  // the source pixels before any codec sees them.
++  if (fingerprint::NoiseEnabled() && src.writable_addr()) {
++    StaticBitmapImage::ShuffleSubchannelColorData(src.writable_addr(),
++                                                  src.info(), 0, 0);
++  }
+   switch (mime_type) {
+     case kMimeTypeJpeg: {
+       SkJpegEncoder::Options options;
+--- a/third_party/blink/renderer/core/html/canvas/canvas_async_blob_creator.cc
++++ b/third_party/blink/renderer/core/html/canvas/canvas_async_blob_creator.cc
+@@ -8,6 +8,7 @@
+ #include "base/metrics/histogram_functions.h"
+ #include "base/metrics/histogram_macros.h"
+ #include "build/build_config.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/platform/platform.h"
+ #include "third_party/blink/public/platform/task_type.h"
+ #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
+@@ -17,6 +18,7 @@
+ #include "third_party/blink/renderer/core/fileapi/blob.h"
+ #include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h"
+ #include "third_party/blink/renderer/platform/graphics/image_data_buffer.h"
++#include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
+ #include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
+ #include "third_party/blink/renderer/platform/graphics/unaccelerated_static_bitmap_image.h"
+ #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+@@ -512,6 +514,11 @@
+   if (fail_encoder_initialization_for_test_) {
+     return false;
+   }
++  // fp-patches: perturb source pixels before the async encoder starts.
++  if (fingerprint::NoiseEnabled() && src_data_.writable_addr()) {
++    StaticBitmapImage::ShuffleSubchannelColorData(
++        src_data_.writable_addr(), src_data_.info(), 0, 0);
++  }
+   if (mime_type_ == kMimeTypeJpeg) {
+     SkJpegEncoder::Options options;
+     options.fQuality = ImageEncoder::ComputeJpegQuality(quality);
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+@@ -52,6 +52,7 @@
+ #include "media/base/video_frame.h"
+ #include "media/renderers/paint_canvas_video_renderer.h"
+ #include "third_party/blink/public/common/features.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
+ #include "third_party/blink/public/mojom/gpu/gpu.mojom-blink.h"
+ #include "third_party/blink/public/platform/platform.h"
+@@ -125,6 +126,7 @@
+ #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+ #include "third_party/blink/renderer/platform/bindings/script_state.h"
+ #include "third_party/blink/renderer/platform/bindings/v8_binding_macros.h"
++#include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
+ #include "third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h"
+ #include "third_party/blink/renderer/platform/graphics/canvas_non2d_snapshot_provider_bitmap.h"
+ #include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
+@@ -5129,6 +5131,18 @@
+       return;
+     }
+     ContextGL()->ReadPixels(x, y, width, height, format, type, data);
++  }
++
++  // fp-patches: apply the canvas pixel noise to WebGL readPixels results.
++  // Only byte formats are handled (same formats as the canvas noise).
++  if (fingerprint::NoiseEnabled() && data && width > 0 && height > 0 &&
++      ((format == GL_RGBA && type == GL_UNSIGNED_BYTE) ||
++       (format == GL_BGRA_EXT && type == GL_UNSIGNED_BYTE))) {
++    const SkImageInfo info = SkImageInfo::Make(
++        width, height,
++        format == GL_RGBA ? kRGBA_8888_SkColorType : kBGRA_8888_SkColorType,
++        kUnpremul_SkAlphaType);
++    StaticBitmapImage::ShuffleSubchannelColorData(data, info, 0, 0);
+   }
+ }
+ 

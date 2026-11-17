@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 6/33] fingerprint: report AudioContext.sampleRate as 48000
+X-Spec: patches/34-audiocontext-samplerate.md
+X-Files: third_party/blink/renderer/modules/webaudio/realtime_audio_destination_handler.cc
+
+---
+
+--- a/third_party/blink/renderer/modules/webaudio/realtime_audio_destination_handler.cc
++++ b/third_party/blink/renderer/modules/webaudio/realtime_audio_destination_handler.cc
+@@ -8,6 +8,7 @@
+ #include "base/metrics/histogram_macros.h"
+ #include "media/base/output_device_info.h"
+ #include "third_party/blink/public/common/features.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/platform/modules/webrtc/webrtc_logging.h"
+ #include "third_party/blink/public/platform/web_audio_latency_hint.h"
+ #include "third_party/blink/public/platform/web_audio_sink_descriptor.h"
+@@ -190,6 +191,12 @@
+ }
+ 
+ double RealtimeAudioDestinationHandler::SampleRate() const {
++  // fp-patches: report the persona rate. 48 kHz is the near-universal
++  // default on Windows (WASAPI shared) and modern Linux (PipeWire); the
++  // real render quantum/hardware rate is untouched.
++  if (fingerprint::Enabled()) {
++    return 48000.0;
++  }
+   // This can be accessed from both threads (main and audio), so it is
+   // possible that `platform_destination_` is not fully functional when it
+   // is accssed by the audio thread.

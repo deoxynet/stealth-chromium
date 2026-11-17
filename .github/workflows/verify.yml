@@ -1,0 +1,40 @@
+name: verify-series
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "23 4 * * *" # nightly: catch upstream drift early
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Chromium tag/ref to verify against"
+        required: false
+        default: ""
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ref: "" # pinned base tag (tools/verify.sh default)
+          - ref: "main" # head of upstream: early-warning channel
+    env:
+      CHROMIUM_REF: ${{ github.event.inputs.ref || matrix.ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify series
+        run: tools/verify.sh ${CHROMIUM_REF}
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Series verification" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tools/verify.sh ${CHROMIUM_REF} 2>&1 | tail -5 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY

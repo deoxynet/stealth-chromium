@@ -1,0 +1,2320 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 36] net: SOCKS5 UDP ASSOCIATE + warm pool for QUIC/HTTP3 over SOCKS5
+X-Spec: patches/38-socks5-udp-associate-warm-pool.md
+X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_client_socket.cc net/socket/socks5_warm_pool.h net/socket/socks5_warm_pool.cc net/quic/quic_session_pool.h net/quic/quic_session_pool.cc net/quic/quic_session_attempt.cc net/http/http_stream_factory_job.cc net/socket/socks_connect_job.h net/socket/socks_connect_job.cc net/log/net_log_event_type_list.h net/BUILD.gn
+
+---
+
+--- /dev/null
++++ b/net/socket/socks5_datagram_client_socket.h
+@@ -0,0 +1,249 @@
++// Copyright 2026 The fp-patches Authors
++// Use of this source code is governed by a GPL-3.0 license that can be
++// found in the LICENSE file of the source tree (fp-patches).
++
++// fp-patches (spec: patches/38-socks5-udp-associate-warm-pool.md):
++// SOCKS5 UDP ASSOCIATE datagram client socket. Runs the RFC 1928
++// greeting (plus RFC 1929 username/password auth when the warm pool
++// carries credentials) and the UDP ASSOCIATE command over a TCP control
++// connection to the proxy, then frames every datagram with the SOCKS5
++// UDP header and relays it through the associate target over a plain
++// UDP socket. Lets QUIC/HTTP-3 egress through a single-hop SOCKS5
++// proxy, which stock Chromium cannot do (it has no UDP-over-SOCKS5
++// support and disables QUIC on SOCKS proxies).
++//
++// Class/method names follow the vendor binary's symbol table
++// (SOCKS5DatagramClientSocket::{ConnectInternal, DoLoop,
++// UdpTargetNetLogParams, ...}).
++
++#ifndef NET_SOCKET_SOCKS5_DATAGRAM_CLIENT_SOCKET_H_
++#define NET_SOCKET_SOCKS5_DATAGRAM_CLIENT_SOCKET_H_
++
++#include <stdint.h>
++
++#include <memory>
++#include <optional>
++
++#include "base/memory/raw_ptr.h"
++#include "base/memory/scoped_refptr.h"
++#include "base/values.h"
++#include "net/base/address_list.h"
++#include "net/base/completion_once_callback.h"
++#include "net/base/completion_repeating_callback.h"
++#include "net/base/ip_endpoint.h"
++#include "net/base/net_export.h"
++#include "net/base/network_handle.h"
++#include "net/base/proxy_server.h"
++#include "net/dns/host_resolver.h"
++#include "net/log/net_log_with_source.h"
++#include "net/socket/datagram_client_socket.h"
++#include "net/socket/datagram_socket.h"
++#include "net/traffic_annotation/network_traffic_annotation.h"
++
++namespace net {
++
++class ClientSocketFactory;
++class DrainableIOBuffer;
++class GrowableIOBuffer;
++class IOBuffer;
++class IOBufferWithSize;
++class NetLog;
++class SocketTag;
++class StreamSocket;
++struct NetLogSource;
++
++// A DatagramClientSocket that carries UDP datagrams through a SOCKS5
++// proxy via UDP ASSOCIATE (RFC 1928, CMD 3). Connect() runs the
++// associate flow; once connected, Read()/Write() exchange
++// SOCKS5-UDP-framed (RFC 1928 section 7) datagrams with the relay
++// endpoint the proxy returned. The peer address reported to the QUIC
++// layer is the associate target.
++class NET_EXPORT_PRIVATE SOCKS5DatagramClientSocket
++    : public DatagramClientSocket {
++ public:
++  SOCKS5DatagramClientSocket(DatagramSocket::BindType bind_type,
++                             const ProxyServer& proxy_server,
++                             ClientSocketFactory* client_socket_factory,
++                             HostResolver* host_resolver,
++                             NetLog* net_log,
++                             const NetLogSource& source);
++
++  SOCKS5DatagramClientSocket(const SOCKS5DatagramClientSocket&) = delete;
++  SOCKS5DatagramClientSocket& operator=(const SOCKS5DatagramClientSocket&) =
++      delete;
++
++  ~SOCKS5DatagramClientSocket() override;
++
++  // NetLog parameters for the UDP ASSOCIATE target event
++  // (symbol-observed helper; |net_error| is nullopt while the associate
++  // is in progress).
++  static base::DictValue UdpTargetNetLogParams(std::optional<int> net_error);
++
++  // DatagramClientSocket implementation.
++  int Connect(const IPEndPoint& address) override;
++  int ConnectUsingNetwork(handles::NetworkHandle network,
++                          const IPEndPoint& address) override;
++  int ConnectUsingDefaultNetwork(const IPEndPoint& address) override;
++  int ConnectAsync(const IPEndPoint& address,
++                   CompletionOnceCallback callback) override;
++  int ConnectUsingNetworkAsync(handles::NetworkHandle network,
++                               const IPEndPoint& address,
++                               CompletionOnceCallback callback) override;
++  int ConnectUsingDefaultNetworkAsync(
++      const IPEndPoint& address,
++      CompletionOnceCallback callback) override;
++  handles::NetworkHandle GetBoundNetwork() const override;
++  void ApplySocketTag(const SocketTag& tag) override;
++  int SetMulticastInterface(uint32_t interface_index) override;
++  void EnableRecvOptimization() override;
++
++  // DatagramSocket implementation.
++  void Close() override;
++  int GetPeerAddress(IPEndPoint* address) const override;
++  int GetLocalAddress(IPEndPoint* address) const override;
++  void UseNonBlockingIO() override;
++  int SetDoNotFragment() override;
++  int SetRecvTos() override;
++  int SetTos(DiffServCodePoint dscp, EcnCodePoint ecn) override;
++  void SetMsgConfirm(bool confirm) override;
++  const NetLogWithSource& NetLog() const override;
++  DscpAndEcn GetLastTos() const override;
++
++  // Socket implementation.
++  int Read(IOBuffer* buf,
++           int buf_len,
++           CompletionOnceCallback callback) override;
++  int Write(IOBuffer* buf,
++            int buf_len,
++            CompletionOnceCallback callback,
++            const NetworkTrafficAnnotationTag& traffic_annotation) override;
++  int SetReceiveBufferSize(int32_t size) override;
++  int SetSendBufferSize(int32_t size) override;
++
++ private:
++  enum State {
++    STATE_NONE,
++    STATE_RESOLVE_PROXY,
++    STATE_RESOLVE_PROXY_COMPLETE,
++    STATE_TCP_CONNECT,
++    STATE_TCP_CONNECT_COMPLETE,
++    STATE_GREET_WRITE,
++    STATE_GREET_WRITE_COMPLETE,
++    STATE_GREET_READ,
++    STATE_GREET_READ_COMPLETE,
++    STATE_AUTH_WRITE,
++    STATE_AUTH_WRITE_COMPLETE,
++    STATE_AUTH_READ,
++    STATE_AUTH_READ_COMPLETE,
++    STATE_ASSOCIATE_WRITE,
++    STATE_ASSOCIATE_WRITE_COMPLETE,
++    STATE_ASSOCIATE_READ,
++    STATE_ASSOCIATE_READ_COMPLETE,
++    STATE_UDP_CONNECT,
++    STATE_UDP_CONNECT_COMPLETE,
++  };
++
++  // Runs the full connect flow (symbol-observed entry point): resolve
++  // the proxy, TCP connect, greet(/auth), UDP ASSOCIATE, then connect
++  // the relay UDP socket.
++  int ConnectInternal(DatagramSocket::BindType bind_type,
++                      handles::NetworkHandle network,
++                      const IPEndPoint& address,
++                      CompletionOnceCallback callback);
++
++  void OnIOComplete(int result);
++  int DoLoop(int last_io_result);
++
++  int DoResolveProxy();
++  int DoResolveProxyComplete(int result);
++  int DoTcpConnect();
++  int DoTcpConnectComplete(int result);
++  int DoGreetWrite();
++  int DoGreetWriteComplete(int result);
++  int DoGreetRead();
++  int DoGreetReadComplete(int result);
++  int DoAuthWrite();
++  int DoAuthWriteComplete(int result);
++  int DoAuthRead();
++  int DoAuthReadComplete(int result);
++  int DoAssociateWrite();
++  int DoAssociateWriteComplete(int result);
++  int DoAssociateRead();
++  int DoAssociateReadComplete(int result);
++  int DoUdpConnect();
++  int DoUdpConnectComplete(int result);
++
++  // UDP data-path helpers: strip the SOCKS5 UDP header from a received
++  // datagram (returns the payload size or a net error) and the async
++  // completion wrappers. The framed/raw buffers are members so they
++  // outlive both the synchronous and asynchronous completions of the
++  // underlying relay-socket operations (one outstanding op per
++  // direction).
++  int ProcessIncomingDatagram(const uint8_t* data,
++                              int len,
++                              IOBuffer* user_buf,
++                              int user_buf_len);
++  void OnUdpReadComplete(raw_ptr<IOBuffer> user_buf,
++                         int user_buf_len,
++                         CompletionOnceCallback callback,
++                         int result);
++  void OnUdpWriteComplete(CompletionOnceCallback callback,
++                          int header_len,
++                          int result);
++
++  // Builds the SOCKS5 UDP request header for |target_| into |header|.
++  static size_t BuildUdpHeader(const IPEndPoint& target, uint8_t* header);
++
++  const DatagramSocket::BindType bind_type_;
++  const ProxyServer proxy_server_;
++
++  raw_ptr<ClientSocketFactory> client_socket_factory_;
++  raw_ptr<HostResolver> host_resolver_;
++  NetLogWithSource net_log_;
++
++  State next_state_ = STATE_NONE;
++  CompletionOnceCallback connect_callback_;
++
++  // The network the relay UDP socket must bind to (kInvalidNetworkHandle
++  // for the default).
++  handles::NetworkHandle network_ = handles::kInvalidNetworkHandle;
++
++  // Set right after construction (the QUIC pool calls UseNonBlockingIO
++  // and EnableRecvOptimization before Connect); applied when the relay
++  // UDP socket is created.
++  bool use_non_blocking_io_ = false;
++  bool enable_recv_optimization_ = false;
++
++  std::unique_ptr<HostResolver::ResolveHostRequest> resolve_request_;
++  AddressList proxy_addresses_;
++
++  // TCP control connection to the proxy.
++  std::unique_ptr<StreamSocket> transport_socket_;
++  // True when transport_socket_ came from Socks5WarmPool (greeting and
++  // auth already completed).
++  bool transport_is_warm_ = false;
++  // True when the proxy selected username/password auth.
++  bool need_auth_ = false;
++
++  scoped_refptr<DrainableIOBuffer> write_buf_;
++  scoped_refptr<GrowableIOBuffer> read_buf_;
++
++  // The QUIC server each datagram is addressed to (set by Connect*).
++  IPEndPoint target_address_;
++  // The UDP relay endpoint the proxy returned (the associate target).
++  IPEndPoint associate_target_;
++
++  // The plain UDP socket carrying framed datagrams to/from the relay.
++  std::unique_ptr<DatagramClientSocket> udp_socket_;
++
++  // Buffers for the in-flight Read/Write on |udp_socket_| (raw on the
++  // read side, SOCKS5-UDP-framed on the write side).
++  scoped_refptr<IOBufferWithSize> incoming_read_buf_;
++  scoped_refptr<IOBufferWithSize> outgoing_write_buf_;
++
++  bool connected_ = false;
++};
++
++}  // namespace net
++
++#endif  // NET_SOCKET_SOCKS5_DATAGRAM_CLIENT_SOCKET_H_
+--- /dev/null
++++ b/net/socket/socks5_datagram_client_socket.cc
+@@ -0,0 +1,930 @@
++// Copyright 2026 The fp-patches Authors
++// Use of this source code is governed by a GPL-3.0 license that can be
++// found in the LICENSE file of the source tree (fp-patches).
++
++// fp-patches (spec: patches/38-socks5-udp-associate-warm-pool.md):
++// SOCKS5 UDP ASSOCIATE implementation. The TCP control-channel state
++// machine (greet / RFC 1929 auth / associate) mirrors the stock
++// SOCKS5ClientSocket handshake loop; the UDP data path frames each
++// datagram per RFC 1928 section 7. Warm sockets from Socks5WarmPool
++// skip the greet/auth states. NetLog: SOCKS5_UDP_ASSOCIATE_TARGET
++// wraps the associate flow and SOCKS5_UDP_SEND_TO_TARGET marks every
++// framed send (both event names are vendor-binary strings).
++
++#include "net/socket/socks5_datagram_client_socket.h"
++
++#include <stdint.h>
++
++#include <array>
++#include <cstring>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "base/functional/bind.h"
++#include "base/memory/ref_counted.h"
++#include "base/notreached.h"
++#include "base/numerics/byte_conversions.h"
++#include "base/strings/utf_string_conversions.h"
++#include "net/base/io_buffer.h"
++#include "net/base/ip_address.h"
++#include "net/base/net_errors.h"
++#include "net/base/sys_addrinfo.h"
++#include "net/log/net_log_event_type.h"
++#include "net/socket/client_socket_factory.h"
++#include "net/socket/socks5_warm_pool.h"
++#include "net/socket/stream_socket.h"
++
++namespace net {
++
++namespace {
++
++// fp-patches: traffic annotation for the SOCKS5 UDP relay path
++// (symbol-observed in the vendor binary as (anonymous
++// ns)::kSocks5UdpTrafficAnnotation).
++constexpr NetworkTrafficAnnotationTag kSocks5UdpTrafficAnnotation =
++    DefineNetworkTrafficAnnotation("socks5_udp_associate", R"(
++      semantics {
++        sender: "SOCKS5DatagramClientSocket"
++        description:
++          "Relays UDP datagrams (QUIC/HTTP-3 traffic) through a SOCKS5 "
++          "proxy using the protocol's UDP ASSOCIATE command. A TCP "
++          "control connection performs the SOCKS5 greeting, optional "
++          "username/password authentication and the associate request; "
++          "datagrams are then sent to the relay endpoint the proxy "
++          "returned."
++        trigger:
++          "A QUIC connection is attempted while the browser is "
++          "configured to use a SOCKS5 proxy."
++        data: "Arbitrary UDP payloads (QUIC packets) addressed to the "
++          "destination the caller connected to."
++        destination: OTHER
++        destination_other:
++          "The configured SOCKS5 proxy, which relays to the destination."
++      }
++      policy {
++        cookies_allowed: NO
++        setting:
++          "This feature is active only when a SOCKS5 proxy is configured "
++          "via --proxy-server or system proxy settings."
++        policy_exception_justification: "Not implemented."
++      })");
++
++constexpr uint8_t kSOCKS5Version = 0x05;
++constexpr uint8_t kNoAuthMethod = 0x00;
++constexpr uint8_t kUsernamePasswordMethod = 0x02;
++constexpr uint8_t kUsernamePasswordVersion = 0x01;
++constexpr uint8_t kUdpAssociateCommand = 0x03;
++constexpr uint8_t kNullByte = 0x00;
++
++constexpr unsigned int kGreetReplySize = 2;
++constexpr unsigned int kAuthReplySize = 2;
++constexpr unsigned int kAssociateReplyHeaderSize = 5;
++
++// RSV(2) + FRAG(1) + ATYP(1) + ADDR(16) + PORT(2): worst-case UDP header.
++constexpr size_t kMaxUdpHeaderSize = 22;
++
++// Largest UDP payload we are willing to relay in one datagram.
++constexpr int kMaxUdpPayloadSize = 65535 - kMaxUdpHeaderSize;
++
++// Address types (RFC 1928).
++constexpr uint8_t kAtypIpv4 = 0x01;
++constexpr uint8_t kAtypDomain = 0x03;
++constexpr uint8_t kAtypIpv6 = 0x04;
++
++}  // namespace
++
++SOCKS5DatagramClientSocket::SOCKS5DatagramClientSocket(
++    DatagramSocket::BindType bind_type,
++    const ProxyServer& proxy_server,
++    ClientSocketFactory* client_socket_factory,
++    HostResolver* host_resolver,
++    NetLog* net_log,
++    const NetLogSource& source)
++    : bind_type_(bind_type),
++      proxy_server_(proxy_server),
++      client_socket_factory_(client_socket_factory),
++      host_resolver_(host_resolver),
++      net_log_(NetLogWithSource::Make(net_log, source)) {}
++
++SOCKS5DatagramClientSocket::~SOCKS5DatagramClientSocket() {
++  Close();
++}
++
++// static
++base::DictValue SOCKS5DatagramClientSocket::UdpTargetNetLogParams(
++    std::optional<int> net_error) {
++  base::DictValue dict;
++  if (net_error.has_value()) {
++    dict.Set("net_error", *net_error);
++  }
++  return dict;
++}
++
++int SOCKS5DatagramClientSocket::Connect(const IPEndPoint& address) {
++  return ConnectInternal(bind_type_, handles::kInvalidNetworkHandle, address,
++                         CompletionOnceCallback());
++}
++
++int SOCKS5DatagramClientSocket::ConnectUsingNetwork(
++    handles::NetworkHandle network,
++    const IPEndPoint& address) {
++  return ConnectInternal(bind_type_, network, address,
++                         CompletionOnceCallback());
++}
++
++int SOCKS5DatagramClientSocket::ConnectUsingDefaultNetwork(
++    const IPEndPoint& address) {
++  return ConnectInternal(bind_type_, handles::kInvalidNetworkHandle, address,
++                         CompletionOnceCallback());
++}
++
++int SOCKS5DatagramClientSocket::ConnectAsync(const IPEndPoint& address,
++                                             CompletionOnceCallback callback) {
++  return ConnectInternal(bind_type_, handles::kInvalidNetworkHandle, address,
++                         std::move(callback));
++}
++
++int SOCKS5DatagramClientSocket::ConnectUsingNetworkAsync(
++    handles::NetworkHandle network,
++    const IPEndPoint& address,
++    CompletionOnceCallback callback) {
++  return ConnectInternal(bind_type_, network, address, std::move(callback));
++}
++
++int SOCKS5DatagramClientSocket::ConnectUsingDefaultNetworkAsync(
++    const IPEndPoint& address,
++    CompletionOnceCallback callback) {
++  return ConnectInternal(bind_type_, handles::kInvalidNetworkHandle, address,
++                         std::move(callback));
++}
++
++handles::NetworkHandle SOCKS5DatagramClientSocket::GetBoundNetwork() const {
++  return udp_socket_ ? udp_socket_->GetBoundNetwork()
++                     : handles::kInvalidNetworkHandle;
++}
++
++void SOCKS5DatagramClientSocket::ApplySocketTag(const SocketTag& tag) {
++  if (udp_socket_) {
++    udp_socket_->ApplySocketTag(tag);
++  }
++}
++
++int SOCKS5DatagramClientSocket::SetMulticastInterface(
++    uint32_t interface_index) {
++  if (udp_socket_) {
++    return udp_socket_->SetMulticastInterface(interface_index);
++  }
++  return ERR_UNEXPECTED;
++}
++
++void SOCKS5DatagramClientSocket::EnableRecvOptimization() {
++  enable_recv_optimization_ = true;
++  if (udp_socket_) {
++    udp_socket_->EnableRecvOptimization();
++  }
++}
++
++void SOCKS5DatagramClientSocket::Close() {
++  connected_ = false;
++  next_state_ = STATE_NONE;
++  connect_callback_.Reset();
++  resolve_request_.reset();
++  transport_socket_.reset();
++  udp_socket_.reset();
++  write_buf_.reset();
++  read_buf_.reset();
++  incoming_read_buf_.reset();
++  outgoing_write_buf_.reset();
++  transport_is_warm_ = false;
++  need_auth_ = false;
++}
++
++int SOCKS5DatagramClientSocket::GetPeerAddress(IPEndPoint* address) const {
++  if (!connected_) {
++    return ERR_UNEXPECTED;
++  }
++  *address = associate_target_;
++  return OK;
++}
++
++int SOCKS5DatagramClientSocket::GetLocalAddress(IPEndPoint* address) const {
++  if (!udp_socket_) {
++    return ERR_UNEXPECTED;
++  }
++  return udp_socket_->GetLocalAddress(address);
++}
++
++void SOCKS5DatagramClientSocket::UseNonBlockingIO() {
++  use_non_blocking_io_ = true;
++  if (udp_socket_) {
++    udp_socket_->UseNonBlockingIO();
++  }
++}
++
++int SOCKS5DatagramClientSocket::SetDoNotFragment() {
++  if (!udp_socket_) {
++    return ERR_UNEXPECTED;
++  }
++  return udp_socket_->SetDoNotFragment();
++}
++
++int SOCKS5DatagramClientSocket::SetRecvTos() {
++  if (!udp_socket_) {
++    return ERR_UNEXPECTED;
++  }
++  return udp_socket_->SetRecvTos();
++}
++
++int SOCKS5DatagramClientSocket::SetTos(DiffServCodePoint dscp,
++                                       EcnCodePoint ecn) {
++  if (!udp_socket_) {
++    return ERR_UNEXPECTED;
++  }
++  return udp_socket_->SetTos(dscp, ecn);
++}
++
++void SOCKS5DatagramClientSocket::SetMsgConfirm(bool confirm) {
++  if (udp_socket_) {
++    udp_socket_->SetMsgConfirm(confirm);
++  }
++}
++
++const NetLogWithSource& SOCKS5DatagramClientSocket::NetLog() const {
++  return net_log_;
++}
++
++DscpAndEcn SOCKS5DatagramClientSocket::GetLastTos() const {
++  if (!udp_socket_) {
++    return DscpAndEcn();
++  }
++  return udp_socket_->GetLastTos();
++}
++
++int SOCKS5DatagramClientSocket::SetReceiveBufferSize(int32_t size) {
++  if (!udp_socket_) {
++    return ERR_UNEXPECTED;
++  }
++  return udp_socket_->SetReceiveBufferSize(size);
++}
++
++int SOCKS5DatagramClientSocket::SetSendBufferSize(int32_t size) {
++  if (!udp_socket_) {
++    return ERR_UNEXPECTED;
++  }
++  return udp_socket_->SetSendBufferSize(size);
++}
++
++// Returns the number of bytes the SOCKS5 UDP header occupies for
++// |target| (RSV/FRAG/ATYP/addr/port).
++// static
++size_t SOCKS5DatagramClientSocket::BuildUdpHeader(const IPEndPoint& target,
++                                                  uint8_t* header) {
++  size_t offset = 0;
++  header[offset++] = 0x00;  // RSV high.
++  header[offset++] = 0x00;  // RSV low.
++  header[offset++] = 0x00;  // Fragment number; fragmentation unused.
++  const IPAddress& address = target.address();
++  if (address.IsIPv4()) {
++    header[offset++] = kAtypIpv4;
++    std::memcpy(header + offset, address.bytes().data(), 4);
++    offset += 4;
++  } else {
++    header[offset++] = kAtypIpv6;
++    std::memcpy(header + offset, address.bytes().data(), 16);
++    offset += 16;
++  }
++  auto port = base::U16ToBigEndian(target.port());
++  std::memcpy(header + offset, port.data(), port.size());
++  offset += port.size();
++  return offset;
++}
++
++int SOCKS5DatagramClientSocket::ProcessIncomingDatagram(const uint8_t* data,
++                                                        int len,
++                                                        IOBuffer* user_buf,
++                                                        int user_buf_len) {
++  // Strip the SOCKS5 UDP header: RSV(2) FRAG(1) ATYP(1) addr port.
++  if (len < 4) {
++    return ERR_INVALID_RESPONSE;
++  }
++  if (data[2] != 0x00) {
++    // Fragmented datagrams are not supported.
++    return ERR_INVALID_RESPONSE;
++  }
++  const size_t length = static_cast<size_t>(len);
++  size_t offset = 3;
++  const uint8_t address_type = data[offset++];
++  switch (address_type) {
++    case kAtypIpv4:
++      offset += 4;
++      break;
++    case kAtypDomain:
++      if (length < offset + 1) {
++        return ERR_INVALID_RESPONSE;
++      }
++      offset += 1 + data[offset];
++      break;
++    case kAtypIpv6:
++      offset += 16;
++      break;
++    default:
++      return ERR_INVALID_RESPONSE;
++  }
++  offset += 2;  // Source port.
++  if (offset > length) {
++    return ERR_INVALID_RESPONSE;
++  }
++  const size_t payload_len = length - offset;
++  if (static_cast<int>(payload_len) > user_buf_len) {
++    return ERR_MSG_TOO_BIG;
++  }
++  std::memcpy(user_buf->data(), data + offset, payload_len);
++  return static_cast<int>(payload_len);
++}
++
++int SOCKS5DatagramClientSocket::Read(IOBuffer* buf,
++                                     int buf_len,
++                                     CompletionOnceCallback callback) {
++  DCHECK(connected_);
++  DCHECK(!callback.is_null());
++  DCHECK(!incoming_read_buf_);
++
++  incoming_read_buf_ = base::MakeRefCounted<IOBufferWithSize>(
++      kMaxUdpPayloadSize + static_cast<int>(kMaxUdpHeaderSize));
++  int rv = udp_socket_->Read(
++      incoming_read_buf_.get(), incoming_read_buf_->size(),
++      base::BindOnce(&SOCKS5DatagramClientSocket::OnUdpReadComplete,
++                     base::Unretained(this), buf, buf_len,
++                     std::move(callback)));
++  if (rv == ERR_IO_PENDING) {
++    return rv;
++  }
++  // Synchronous completion: strip the header and return the payload
++  // directly (the callback will not run).
++  if (rv > 0) {
++    rv = ProcessIncomingDatagram(
++        reinterpret_cast<const uint8_t*>(incoming_read_buf_->data()), rv, buf,
++        buf_len);
++  }
++  incoming_read_buf_.reset();
++  return rv;
++}
++
++void SOCKS5DatagramClientSocket::OnUdpReadComplete(
++    raw_ptr<IOBuffer> user_buf,
++    int user_buf_len,
++    CompletionOnceCallback callback,
++    int result) {
++  DCHECK_NE(ERR_IO_PENDING, result);
++  scoped_refptr<IOBufferWithSize> incoming = std::move(incoming_read_buf_);
++  if (result <= 0) {
++    std::move(callback).Run(result);
++    return;
++  }
++  std::move(callback).Run(ProcessIncomingDatagram(
++      reinterpret_cast<const uint8_t*>(incoming->data()), result, user_buf,
++      user_buf_len));
++}
++
++int SOCKS5DatagramClientSocket::Write(
++    IOBuffer* buf,
++    int buf_len,
++    CompletionOnceCallback callback,
++    const NetworkTrafficAnnotationTag& traffic_annotation) {
++  DCHECK(connected_);
++  DCHECK(!callback.is_null());
++  DCHECK(!outgoing_write_buf_);
++  if (buf_len > kMaxUdpPayloadSize) {
++    return ERR_MSG_TOO_BIG;
++  }
++
++  // fp-patches: frame the datagram for the associate target and relay
++  // it (netlog type SOCKS5_UDP_SEND_TO_TARGET).
++  outgoing_write_buf_ =
++      base::MakeRefCounted<IOBufferWithSize>(buf_len + kMaxUdpHeaderSize);
++  const size_t header_len =
++      BuildUdpHeader(target_address_,
++                     reinterpret_cast<uint8_t*>(outgoing_write_buf_->data()));
++  std::memcpy(outgoing_write_buf_->data() + header_len, buf->data(), buf_len);
++  net_log_.AddEvent(NetLogEventType::SOCKS5_UDP_SEND_TO_TARGET, [&] {
++    base::DictValue dict;
++    dict.Set("bytes", buf_len);
++    return dict;
++  });
++  int rv = udp_socket_->Write(
++      outgoing_write_buf_.get(), static_cast<int>(header_len + buf_len),
++      base::BindOnce(&SOCKS5DatagramClientSocket::OnUdpWriteComplete,
++                     base::Unretained(this), std::move(callback),
++                     static_cast<int>(header_len)),
++      kSocks5UdpTrafficAnnotation);
++  if (rv == ERR_IO_PENDING) {
++    return rv;
++  }
++  // Synchronous completion: report the user payload size, not the
++  // framed size.
++  outgoing_write_buf_.reset();
++  if (rv > 0) {
++    rv -= static_cast<int>(header_len);
++  }
++  return rv;
++}
++
++void SOCKS5DatagramClientSocket::OnUdpWriteComplete(
++    CompletionOnceCallback callback,
++    int header_len,
++    int result) {
++  DCHECK_NE(ERR_IO_PENDING, result);
++  outgoing_write_buf_.reset();
++  if (result > 0) {
++    result -= header_len;
++  }
++  std::move(callback).Run(result);
++}
++
++int SOCKS5DatagramClientSocket::ConnectInternal(
++    DatagramSocket::BindType bind_type,
++    handles::NetworkHandle network,
++    const IPEndPoint& address,
++    CompletionOnceCallback callback) {
++  DCHECK_EQ(STATE_NONE, next_state_);
++  DCHECK(connect_callback_.is_null());
++
++  target_address_ = address;
++  network_ = network;
++
++  net_log_.BeginEvent(NetLogEventType::SOCKS5_UDP_ASSOCIATE_TARGET);
++  next_state_ = STATE_RESOLVE_PROXY;
++  int rv = DoLoop(OK);
++  if (rv == ERR_IO_PENDING) {
++    connect_callback_ = std::move(callback);
++  } else {
++    // Complete synchronously, mirroring UDPClientSocket: the callback
++    // (if any) is dropped and the result returned to the caller, which
++    // is responsible for running its own completion path. Running the
++    // callback here as well would double-fire the QUIC pool's split
++    // callback.
++    net_log_.EndEvent(NetLogEventType::SOCKS5_UDP_ASSOCIATE_TARGET, [&] {
++      return UdpTargetNetLogParams(rv);
++    });
++  }
++  return rv;
++}
++
++void SOCKS5DatagramClientSocket::OnIOComplete(int result) {
++  int rv = DoLoop(result);
++  if (rv != ERR_IO_PENDING) {
++    net_log_.EndEvent(NetLogEventType::SOCKS5_UDP_ASSOCIATE_TARGET, [&] {
++      return UdpTargetNetLogParams(rv);
++    });
++    if (!connect_callback_.is_null()) {
++      std::move(connect_callback_).Run(rv);
++    }
++  }
++}
++
++int SOCKS5DatagramClientSocket::DoLoop(int last_io_result) {
++  DCHECK_NE(STATE_NONE, next_state_);
++  int rv = last_io_result;
++  do {
++    State state = next_state_;
++    next_state_ = STATE_NONE;
++    switch (state) {
++      case STATE_RESOLVE_PROXY:
++        DCHECK_EQ(OK, rv);
++        rv = DoResolveProxy();
++        break;
++      case STATE_RESOLVE_PROXY_COMPLETE:
++        rv = DoResolveProxyComplete(rv);
++        break;
++      case STATE_TCP_CONNECT:
++        DCHECK_EQ(OK, rv);
++        rv = DoTcpConnect();
++        break;
++      case STATE_TCP_CONNECT_COMPLETE:
++        rv = DoTcpConnectComplete(rv);
++        break;
++      case STATE_GREET_WRITE:
++        DCHECK_EQ(OK, rv);
++        rv = DoGreetWrite();
++        break;
++      case STATE_GREET_WRITE_COMPLETE:
++        rv = DoGreetWriteComplete(rv);
++        break;
++      case STATE_GREET_READ:
++        DCHECK_EQ(OK, rv);
++        rv = DoGreetRead();
++        break;
++      case STATE_GREET_READ_COMPLETE:
++        rv = DoGreetReadComplete(rv);
++        break;
++      case STATE_AUTH_WRITE:
++        DCHECK_EQ(OK, rv);
++        rv = DoAuthWrite();
++        break;
++      case STATE_AUTH_WRITE_COMPLETE:
++        rv = DoAuthWriteComplete(rv);
++        break;
++      case STATE_AUTH_READ:
++        DCHECK_EQ(OK, rv);
++        rv = DoAuthRead();
++        break;
++      case STATE_AUTH_READ_COMPLETE:
++        rv = DoAuthReadComplete(rv);
++        break;
++      case STATE_ASSOCIATE_WRITE:
++        DCHECK_EQ(OK, rv);
++        rv = DoAssociateWrite();
++        break;
++      case STATE_ASSOCIATE_WRITE_COMPLETE:
++        rv = DoAssociateWriteComplete(rv);
++        break;
++      case STATE_ASSOCIATE_READ:
++        DCHECK_EQ(OK, rv);
++        rv = DoAssociateRead();
++        break;
++      case STATE_ASSOCIATE_READ_COMPLETE:
++        rv = DoAssociateReadComplete(rv);
++        break;
++      case STATE_UDP_CONNECT:
++        DCHECK_EQ(OK, rv);
++        rv = DoUdpConnect();
++        break;
++      case STATE_UDP_CONNECT_COMPLETE:
++        rv = DoUdpConnectComplete(rv);
++        break;
++      default:
++        NOTREACHED() << "bad state";
++    }
++  } while (rv != ERR_IO_PENDING && next_state_ != STATE_NONE);
++  return rv;
++}
++
++int SOCKS5DatagramClientSocket::DoResolveProxy() {
++  next_state_ = STATE_RESOLVE_PROXY_COMPLETE;
++  resolve_request_ = host_resolver_->CreateRequest(
++      proxy_server_.host_port_pair(), NetworkAnonymizationKey(), net_log_,
++      std::nullopt);
++  return resolve_request_->Start(base::BindOnce(
++      &SOCKS5DatagramClientSocket::OnIOComplete, base::Unretained(this)));
++}
++
++int SOCKS5DatagramClientSocket::DoResolveProxyComplete(int result) {
++  if (result != OK) {
++    return result;
++  }
++  proxy_addresses_ = resolve_request_->GetAddressResults();
++  resolve_request_.reset();
++  if (proxy_addresses_.empty()) {
++    return ERR_SOCKS_CONNECTION_FAILED;
++  }
++  next_state_ = STATE_TCP_CONNECT;
++  return OK;
++}
++
++int SOCKS5DatagramClientSocket::DoTcpConnect() {
++  next_state_ = STATE_TCP_CONNECT_COMPLETE;
++
++  // fp-patches: prefer a warm socket from Socks5WarmPool — its
++  // greeting/auth have already completed, so jump straight to the
++  // associate request.
++  transport_socket_ = Socks5WarmPool::GetInstance()->TakeWarmSocket();
++  if (transport_socket_) {
++    transport_is_warm_ = true;
++    next_state_ = STATE_ASSOCIATE_WRITE;
++    return OK;
++  }
++
++  transport_socket_ = client_socket_factory_->CreateTransportClientSocket(
++      proxy_addresses_, /*socket_performance_watcher=*/nullptr,
++      /*network_quality_estimator=*/nullptr, net_log_.net_log(),
++      net_log_.source());
++  return transport_socket_->Connect(base::BindOnce(
++      &SOCKS5DatagramClientSocket::OnIOComplete, base::Unretained(this)));
++}
++
++int SOCKS5DatagramClientSocket::DoTcpConnectComplete(int result) {
++  if (result != OK) {
++    return result;
++  }
++  next_state_ = STATE_GREET_WRITE;
++  return OK;
++}
++
++int SOCKS5DatagramClientSocket::DoGreetWrite() {
++  next_state_ = STATE_GREET_WRITE_COMPLETE;
++  if (!write_buf_) {
++    std::vector<uint8_t> greet{kSOCKS5Version, 0x01, kNoAuthMethod};
++    if (Socks5WarmPool::GetProxyCredentials()) {
++      greet[1] = 0x02;
++      greet.push_back(kUsernamePasswordMethod);
++    }
++    auto base_buffer = base::MakeRefCounted<VectorIOBuffer>(std::move(greet));
++    write_buf_ = base::MakeRefCounted<DrainableIOBuffer>(std::move(base_buffer),
++                                                         base_buffer->size());
++  }
++  return transport_socket_->Write(
++      write_buf_.get(), write_buf_->BytesRemaining(),
++      base::BindOnce(&SOCKS5DatagramClientSocket::OnIOComplete,
++                     base::Unretained(this)),
++      kSocks5UdpTrafficAnnotation);
++}
++
++int SOCKS5DatagramClientSocket::DoGreetWriteComplete(int result) {
++  if (result < 0) {
++    return result;
++  }
++  write_buf_->DidConsume(result);
++  if (write_buf_->BytesRemaining() == 0) {
++    write_buf_.reset();
++    next_state_ = STATE_GREET_READ;
++  } else {
++    next_state_ = STATE_GREET_WRITE;
++  }
++  return OK;
++}
++
++int SOCKS5DatagramClientSocket::DoGreetRead() {
++  next_state_ = STATE_GREET_READ_COMPLETE;
++  if (!read_buf_) {
++    read_buf_ = base::MakeRefCounted<GrowableIOBuffer>();
++    read_buf_->SetCapacity(kGreetReplySize);
++  }
++  return transport_socket_->Read(
++      read_buf_.get(), read_buf_->RemainingCapacity(),
++      base::BindOnce(&SOCKS5DatagramClientSocket::OnIOComplete,
++                     base::Unretained(this)));
++}
++
++int SOCKS5DatagramClientSocket::DoGreetReadComplete(int result) {
++  if (result < 0) {
++    return result;
++  }
++  if (result == 0) {
++    net_log_.AddEvent(NetLogEventType::SOCKS_UNEXPECTEDLY_CLOSED_DURING_GREETING);
++    return ERR_SOCKS_CONNECTION_FAILED;
++  }
++  read_buf_->set_offset(read_buf_->offset() + result);
++  if (read_buf_->RemainingCapacity() > 0) {
++    next_state_ = STATE_GREET_READ;
++    return OK;
++  }
++
++  base::span<uint8_t> data = read_buf_->span_before_offset();
++  if (data[0] != kSOCKS5Version) {
++    net_log_.AddEventWithIntParams(NetLogEventType::SOCKS_UNEXPECTED_VERSION,
++                                   "version", data[0]);
++    return ERR_SOCKS_CONNECTION_FAILED;
++  }
++  const uint8_t method = data[1];
++  read_buf_.reset();
++  if (method == kNoAuthMethod) {
++    next_state_ = STATE_ASSOCIATE_WRITE;
++    return OK;
++  }
++  if (method == kUsernamePasswordMethod &&
++      Socks5WarmPool::GetProxyCredentials()) {
++    need_auth_ = true;
++    next_state_ = STATE_AUTH_WRITE;
++    return OK;
++  }
++  net_log_.AddEventWithIntParams(NetLogEventType::SOCKS_UNEXPECTED_AUTH,
++                                 "method", method);
++  return ERR_SOCKS_CONNECTION_FAILED;
++}
++
++int SOCKS5DatagramClientSocket::DoAuthWrite() {
++  next_state_ = STATE_AUTH_WRITE_COMPLETE;
++  if (!write_buf_) {
++    const auto& credentials = Socks5WarmPool::GetProxyCredentials();
++    const std::string username = base::UTF16ToUTF8(credentials->username());
++    const std::string password = base::UTF16ToUTF8(credentials->password());
++    if (username.size() > 0xFF || password.size() > 0xFF) {
++      return ERR_SOCKS_CONNECTION_FAILED;
++    }
++    std::vector<uint8_t> auth;
++    auth.reserve(3 + username.size() + password.size());
++    auth.push_back(kUsernamePasswordVersion);
++    auth.push_back(static_cast<uint8_t>(username.size()));
++    auth.insert(auth.end(), username.begin(), username.end());
++    auth.push_back(static_cast<uint8_t>(password.size()));
++    auth.insert(auth.end(), password.begin(), password.end());
++    auto base_buffer = base::MakeRefCounted<VectorIOBuffer>(std::move(auth));
++    write_buf_ = base::MakeRefCounted<DrainableIOBuffer>(std::move(base_buffer),
++                                                         base_buffer->size());
++  }
++  return transport_socket_->Write(
++      write_buf_.get(), write_buf_->BytesRemaining(),
++      base::BindOnce(&SOCKS5DatagramClientSocket::OnIOComplete,
++                     base::Unretained(this)),
++      kSocks5UdpTrafficAnnotation);
++}
++
++int SOCKS5DatagramClientSocket::DoAuthWriteComplete(int result) {
++  if (result < 0) {
++    return result;
++  }
++  write_buf_->DidConsume(result);
++  if (write_buf_->BytesRemaining() == 0) {
++    write_buf_.reset();
++    next_state_ = STATE_AUTH_READ;
++  } else {
++    next_state_ = STATE_AUTH_WRITE;
++  }
++  return OK;
++}
++
++int SOCKS5DatagramClientSocket::DoAuthRead() {
++  next_state_ = STATE_AUTH_READ_COMPLETE;
++  if (!read_buf_) {
++    read_buf_ = base::MakeRefCounted<GrowableIOBuffer>();
++    read_buf_->SetCapacity(kAuthReplySize);
++  }
++  return transport_socket_->Read(
++      read_buf_.get(), read_buf_->RemainingCapacity(),
++      base::BindOnce(&SOCKS5DatagramClientSocket::OnIOComplete,
++                     base::Unretained(this)));
++}
++
++int SOCKS5DatagramClientSocket::DoAuthReadComplete(int result) {
++  if (result < 0) {
++    return result;
++  }
++  if (result == 0) {
++    return ERR_SOCKS_CONNECTION_FAILED;
++  }
++  read_buf_->set_offset(read_buf_->offset() + result);
++  if (read_buf_->RemainingCapacity() > 0) {
++    next_state_ = STATE_AUTH_READ;
++    return OK;
++  }
++
++  base::span<uint8_t> data = read_buf_->span_before_offset();
++  if (data[0] != kUsernamePasswordVersion || data[1] != 0x00) {
++    net_log_.AddEventWithIntParams(NetLogEventType::SOCKS_UNEXPECTED_AUTH,
++                                   "status", data[1]);
++    return ERR_SOCKS_CONNECTION_FAILED;
++  }
++  read_buf_.reset();
++  next_state_ = STATE_ASSOCIATE_WRITE;
++  return OK;
++}
++
++int SOCKS5DatagramClientSocket::DoAssociateWrite() {
++  next_state_ = STATE_ASSOCIATE_WRITE_COMPLETE;
++  if (!write_buf_) {
++    // CMD 3 (UDP ASSOCIATE) with DST.ADDR/PORT 0.0.0.0:0 — the client
++    // expects the proxy to relay datagrams from the TCP control
++    // connection's source address.
++    const std::vector<uint8_t> request{
++        kSOCKS5Version, kUdpAssociateCommand, kNullByte,
++        kAtypIpv4,      0x00,                 0x00,
++        0x00,           0x00,                 0x00,
++        0x00};
++    auto base_buffer = base::MakeRefCounted<VectorIOBuffer>(request);
++    write_buf_ = base::MakeRefCounted<DrainableIOBuffer>(std::move(base_buffer),
++                                                         base_buffer->size());
++  }
++  return transport_socket_->Write(
++      write_buf_.get(), write_buf_->BytesRemaining(),
++      base::BindOnce(&SOCKS5DatagramClientSocket::OnIOComplete,
++                     base::Unretained(this)),
++      kSocks5UdpTrafficAnnotation);
++}
++
++int SOCKS5DatagramClientSocket::DoAssociateWriteComplete(int result) {
++  if (result < 0) {
++    return result;
++  }
++  write_buf_->DidConsume(result);
++  if (write_buf_->BytesRemaining() == 0) {
++    write_buf_.reset();
++    next_state_ = STATE_ASSOCIATE_READ;
++  } else {
++    next_state_ = STATE_ASSOCIATE_WRITE;
++  }
++  return OK;
++}
++
++int SOCKS5DatagramClientSocket::DoAssociateRead() {
++  next_state_ = STATE_ASSOCIATE_READ_COMPLETE;
++  if (!read_buf_) {
++    read_buf_ = base::MakeRefCounted<GrowableIOBuffer>();
++    read_buf_->SetCapacity(kAssociateReplyHeaderSize);
++  }
++  return transport_socket_->Read(
++      read_buf_.get(), read_buf_->RemainingCapacity(),
++      base::BindOnce(&SOCKS5DatagramClientSocket::OnIOComplete,
++                     base::Unretained(this)));
++}
++
++int SOCKS5DatagramClientSocket::DoAssociateReadComplete(int result) {
++  if (result < 0) {
++    return result;
++  }
++  if (result == 0) {
++    net_log_.AddEvent(
++        NetLogEventType::SOCKS_UNEXPECTEDLY_CLOSED_DURING_HANDSHAKE);
++    return ERR_SOCKS_CONNECTION_FAILED;
++  }
++  read_buf_->set_offset(read_buf_->offset() + result);
++
++  if (read_buf_->offset() == kAssociateReplyHeaderSize) {
++    base::span<uint8_t> data = read_buf_->span_before_offset();
++    if (data[0] != kSOCKS5Version || data[2] != kNullByte) {
++      net_log_.AddEventWithIntParams(NetLogEventType::SOCKS_UNEXPECTED_VERSION,
++                                     "version", data[0]);
++      return ERR_SOCKS_CONNECTION_FAILED;
++    }
++    if (data[1] != 0x00) {
++      net_log_.AddEventWithIntParams(NetLogEventType::SOCKS_SERVER_ERROR,
++                                     "error_code", data[1]);
++      return ERR_SOCKS_CONNECTION_FAILED;
++    }
++    const uint8_t address_type = data[3];
++    int additional_bytes_expected;
++    if (address_type == kAtypDomain) {
++      additional_bytes_expected = data[4];
++    } else if (address_type == kAtypIpv4) {
++      additional_bytes_expected = sizeof(struct in_addr) - 1;
++    } else if (address_type == kAtypIpv6) {
++      additional_bytes_expected = sizeof(struct in6_addr) - 1;
++    } else {
++      net_log_.AddEventWithIntParams(
++          NetLogEventType::SOCKS_UNKNOWN_ADDRESS_TYPE, "address_type",
++          data[3]);
++      return ERR_SOCKS_CONNECTION_FAILED;
++    }
++    additional_bytes_expected += 2;  // Port.
++    read_buf_->SetCapacity(kAssociateReplyHeaderSize +
++                           additional_bytes_expected);
++    next_state_ = STATE_ASSOCIATE_READ;
++    return OK;
++  }
++
++  if (read_buf_->RemainingCapacity() == 0) {
++    // Parse BND.ADDR/BND.PORT — the UDP relay endpoint.
++    base::span<uint8_t> data = read_buf_->span_before_offset();
++    const uint8_t address_type = data[3];
++    const uint8_t* addr = &data[4];
++    size_t addr_len;
++    if (address_type == kAtypIpv4) {
++      addr_len = sizeof(struct in_addr);
++    } else if (address_type == kAtypIpv6) {
++      addr_len = sizeof(struct in6_addr);
++    } else {
++      addr_len = addr[0];
++      addr += 1;
++    }
++    const uint8_t* port_bytes = addr + addr_len;
++    associate_target_ = IPEndPoint(
++        IPAddress(base::span<const uint8_t>(addr, addr_len)),
++        base::U16FromBigEndian(
++            base::span<const uint8_t, 2>(port_bytes, 2)));
++    read_buf_.reset();
++
++    // A reply of 0.0.0.0 means "relay from the same host as the TCP
++    // control connection" (RFC 1928 section 4 practice).
++    if (associate_target_.address().IsIPv4() &&
++        associate_target_.address() == IPAddress(0u, 0u, 0u, 0u)) {
++      IPEndPoint tcp_peer;
++      if (transport_socket_->GetPeerAddress(&tcp_peer) == OK) {
++        associate_target_ =
++            IPEndPoint(tcp_peer.address(), associate_target_.port());
++      }
++    }
++
++    next_state_ = STATE_UDP_CONNECT;
++    return OK;
++  }
++
++  next_state_ = STATE_ASSOCIATE_READ;
++  return OK;
++}
++
++int SOCKS5DatagramClientSocket::DoUdpConnect() {
++  next_state_ = STATE_UDP_CONNECT_COMPLETE;
++  udp_socket_ = client_socket_factory_->CreateDatagramClientSocket(
++      bind_type_, net_log_.net_log(), net_log_.source());
++  if (use_non_blocking_io_) {
++    udp_socket_->UseNonBlockingIO();
++  }
++  if (enable_recv_optimization_) {
++    udp_socket_->EnableRecvOptimization();
++  }
++  if (network_ == handles::kInvalidNetworkHandle) {
++    return udp_socket_->Connect(associate_target_);
++  }
++  return udp_socket_->ConnectUsingNetwork(network_, associate_target_);
++}
++
++int SOCKS5DatagramClientSocket::DoUdpConnectComplete(int result) {
++  if (result != OK) {
++    return result;
++  }
++  connected_ = true;
++  next_state_ = STATE_NONE;
++  return OK;
++}
++
++}  // namespace net
+--- /dev/null
++++ b/net/socket/socks5_warm_pool.h
+@@ -0,0 +1,165 @@
++// Copyright 2026 The fp-patches Authors
++// Use of this source code is governed by a GPL-3.0 license that can be
++// found in the LICENSE file of the source tree (fp-patches).
++
++// fp-patches (spec: patches/38-socks5-udp-associate-warm-pool.md):
++// SOCKS5 warm connection pool. Keeps a small set of TCP sockets to the
++// SOCKS5 proxy that have already completed the RFC 1928 method
++// negotiation (and RFC 1929 username/password auth when the proxy is
++// credentialed) so consumers — the QUIC UDP-ASSOCIATE datagram socket and
++// the TCP tunnel path in SOCKSConnectJob — can skip per-request proxy
++// authentication. Class/method names follow the vendor binary's symbol
++// table (Socks5WarmPool::{Initialize, StartOneConnect, TakeWarmSocket,
++// PurgeStale, PromoteToWarm, OnTcpConnectComplete, OnGreet*Complete,
++// OnAuth*Complete}).
++
++#ifndef NET_SOCKET_SOCKS5_WARM_POOL_H_
++#define NET_SOCKET_SOCKS5_WARM_POOL_H_
++
++#include <stdint.h>
++
++#include <map>
++#include <memory>
++#include <optional>
++#include <vector>
++
++#include "base/memory/raw_ptr.h"
++#include "base/memory/scoped_refptr.h"
++#include "base/no_destructor.h"
++#include "base/time/time.h"
++#include "net/base/address_list.h"
++#include "net/base/auth.h"
++#include "net/base/host_port_pair.h"
++#include "net/base/net_export.h"
++#include "net/traffic_annotation/network_traffic_annotation.h"
++
++namespace net {
++
++class ClientSocketFactory;
++class DrainableIOBuffer;
++class GrowableIOBuffer;
++class NetLog;
++class StreamSocket;
++
++// Pool of pre-connected (and pre-authenticated) SOCKS5 TCP sockets.
++//
++// The pool is keyed by the proxy configuration passed to Initialize();
++// re-initializing with a different address list drops all state. Entries
++// older than the warm TTL are dropped by PurgeStale().
++class NET_EXPORT_PRIVATE Socks5WarmPool {
++ public:
++  Socks5WarmPool(const Socks5WarmPool&) = delete;
++  Socks5WarmPool& operator=(const Socks5WarmPool&) = delete;
++
++  // Process-wide pool (one SOCKS5 proxy configuration per browser
++  // profile at a time; the vendor build also carries no per-context
++  // pool symbol).
++  static Socks5WarmPool* GetInstance();
++
++  // Configures the pool for |proxy_addresses| and starts background
++  // warm connects. Idempotent while the configuration is unchanged.
++  // Signature as recovered from the vendor symbol table.
++  void Initialize(const AddressList& proxy_addresses,
++                  std::optional<AuthCredentials> credentials,
++                  ClientSocketFactory* client_socket_factory,
++                  NetLog* net_log,
++                  const NetworkTrafficAnnotationTag& traffic_annotation);
++
++  // Removes warm entries that have been idle longer than the TTL.
++  void PurgeStale();
++
++  // Starts one background TCP connect + greeting + auth handshake, if
++  // the pool is below its target size.
++  void StartOneConnect();
++
++  // Returns a socket to the proxy whose SOCKS5 method negotiation (and
++  // username/password auth, if configured) has completed, or nullptr if
++  // none is available. Refills the pool in the background.
++  std::unique_ptr<StreamSocket> TakeWarmSocket();
++
++  // Stock Chromium has no credential source for SOCKS proxies (it does
++  // not implement RFC 1929 at all), so credentials are registered here
++  // by the embedder; every SOCKS5 consumer in this patch reads them
++  // from this single registration point.
++  static void SetProxyCredentials(std::optional<AuthCredentials> credentials);
++  static const std::optional<AuthCredentials>& GetProxyCredentials();
++
++  // Moves a socket whose greeting/auth completed from the pending map
++  // to the warm vector.
++  void PromoteToWarm(StreamSocket* socket);
++
++  // Number of sockets stored (pending + warm); for tests and netlog.
++  size_t GetSizeForTesting() const;
++
++ private:
++  friend class base::NoDestructor<Socks5WarmPool>;
++
++  struct PendingEntry {
++    PendingEntry();
++    PendingEntry(PendingEntry&&);
++    PendingEntry& operator=(PendingEntry&&);
++    ~PendingEntry();
++
++    // Owns the socket between TCP connect and warm promotion.
++    std::unique_ptr<StreamSocket> socket;
++    scoped_refptr<DrainableIOBuffer> write_buf;
++    scoped_refptr<GrowableIOBuffer> read_buf;
++    // Method the proxy selected in its greeting reply (0x00 none,
++    // 0x02 username/password).
++    uint8_t selected_method = 0x00;
++    // Index of the address in |proxy_addresses| being attempted.
++    size_t address_index = 0;
++  };
++
++  struct WarmEntry {
++    WarmEntry(std::unique_ptr<StreamSocket> socket, base::TimeTicks created);
++    WarmEntry(WarmEntry&&);
++    WarmEntry& operator=(WarmEntry&&);
++    ~WarmEntry();
++
++    std::unique_ptr<StreamSocket> socket;
++    base::TimeTicks created;
++  };
++
++  Socks5WarmPool();
++  ~Socks5WarmPool();
++
++  PendingEntry* FindPending(StreamSocket* socket);
++
++  // Handshake continuation callbacks; all take the socket the event
++  // belongs to (symbol-observed signatures).
++  void OnTcpConnectComplete(StreamSocket* socket, int result);
++  void OnGreetWriteComplete(StreamSocket* socket, int result);
++  void OnGreetReadComplete(StreamSocket* socket, int result);
++  void OnAuthWriteComplete(StreamSocket* socket, int result);
++  void OnAuthReadComplete(StreamSocket* socket, int result);
++
++  void DestroyPending(StreamSocket* socket);
++
++  AddressList proxy_addresses_;
++  std::optional<AuthCredentials> credentials_;
++  raw_ptr<ClientSocketFactory> client_socket_factory_ = nullptr;
++  raw_ptr<NetLog> net_log_ = nullptr;
++  // Overwritten by Initialize() before any socket is created.
++  NetworkTrafficAnnotationTag traffic_annotation_ = MISSING_TRAFFIC_ANNOTATION;
++
++  // Symbol-observed container shapes.
++  std::map<StreamSocket*, PendingEntry> pending_;
++  std::vector<WarmEntry> warm_;
++};
++
++// Returns a StreamSocket that finishes the SOCKS5 CONNECT handshake
++// (request/reply only — the method negotiation and, when configured,
++// RFC 1929 auth have already run) over |warm_socket|, tunneling to
++// |destination|. Used by SOCKSConnectJob for sockets taken from
++// Socks5WarmPool; the vendor's exact consumption path is not
++// recoverable from the binary, so it lives here rather than in a
++// modified SOCKS5ClientSocket.
++std::unique_ptr<StreamSocket> CreateSocks5WarmTunnelSocket(
++    std::unique_ptr<StreamSocket> warm_socket,
++    const HostPortPair& destination,
++    const NetworkTrafficAnnotationTag& traffic_annotation);
++
++}  // namespace net
++
++#endif  // NET_SOCKET_SOCKS5_WARM_POOL_H_
+--- /dev/null
++++ b/net/socket/socks5_warm_pool.cc
+@@ -0,0 +1,674 @@
++// Copyright 2026 The fp-patches Authors
++// Use of this source code is governed by a GPL-3.0 license that can be
++// found in the LICENSE file of the source tree (fp-patches).
++
++// fp-patches (spec: patches/38-socks5-udp-associate-warm-pool.md):
++// SOCKS5 warm pool implementation. Each warm entry runs its own
++// connect/greet(/auth) state machine on a raw TCP socket created by the
++// ClientSocketFactory; completed entries wait in |warm_| until
++// TakeWarmSocket() hands them out. Timing constants are reconstructed
++// (the vendor's exact refill policy was not recoverable) and documented
++// in the spec's "Repro notes".
++
++#include "net/socket/socks5_warm_pool.h"
++
++#include <stdint.h>
++
++#include <array>
++#include <utility>
++
++#include "base/functional/bind.h"
++#include "base/memory/ref_counted.h"
++#include "base/notreached.h"
++#include "base/numerics/byte_conversions.h"
++#include "base/strings/utf_string_conversions.h"
++#include "net/base/io_buffer.h"
++#include "net/base/ip_endpoint.h"
++#include "net/base/net_errors.h"
++#include "net/base/sys_addrinfo.h"
++#include "net/log/net_log_with_source.h"
++#include "net/socket/client_socket_factory.h"
++#include "net/socket/stream_socket.h"
++
++namespace net {
++
++namespace {
++
++// SOCKS5 protocol constants (RFC 1928 / RFC 1929).
++constexpr uint8_t kSOCKS5Version = 0x05;
++constexpr uint8_t kNoAuthMethod = 0x00;
++constexpr uint8_t kUsernamePasswordMethod = 0x02;
++constexpr uint8_t kUsernamePasswordVersion = 0x01;
++
++constexpr unsigned int kGreetReplySize = 2;
++constexpr unsigned int kAuthReplySize = 2;
++
++// Target number of warm sockets kept in |warm_|.
++constexpr size_t kTargetWarmSockets = 2;
++// Concurrent in-flight connect+greet+auth attempts.
++constexpr size_t kMaxPendingSockets = 1;
++// Warm entries older than this are dropped by PurgeStale().
++constexpr base::TimeDelta kWarmTtl = base::Seconds(30);
++
++}  // namespace
++
++Socks5WarmPool::PendingEntry::PendingEntry() = default;
++Socks5WarmPool::PendingEntry::PendingEntry(PendingEntry&&) = default;
++Socks5WarmPool::PendingEntry& Socks5WarmPool::PendingEntry::operator=(
++    PendingEntry&&) = default;
++Socks5WarmPool::PendingEntry::~PendingEntry() = default;
++
++Socks5WarmPool::WarmEntry::WarmEntry(std::unique_ptr<StreamSocket> socket,
++                                     base::TimeTicks created)
++    : socket(std::move(socket)), created(created) {}
++Socks5WarmPool::WarmEntry::WarmEntry(WarmEntry&&) = default;
++Socks5WarmPool::WarmEntry& Socks5WarmPool::WarmEntry::operator=(
++    WarmEntry&&) = default;
++Socks5WarmPool::WarmEntry::~WarmEntry() = default;
++
++Socks5WarmPool::Socks5WarmPool() = default;
++Socks5WarmPool::~Socks5WarmPool() = default;
++
++// static
++Socks5WarmPool* Socks5WarmPool::GetInstance() {
++  static base::NoDestructor<Socks5WarmPool> instance;
++  return instance.get();
++}
++
++// static
++void Socks5WarmPool::SetProxyCredentials(
++    std::optional<AuthCredentials> credentials) {
++  Socks5WarmPool* pool = GetInstance();
++  // Existing warm sockets authenticated with the old credentials; drop
++  // them so nothing stale is handed out.
++  if (pool->credentials_.has_value() != credentials.has_value()) {
++    pool->pending_.clear();
++    pool->warm_.clear();
++  }
++  pool->credentials_ = std::move(credentials);
++}
++
++// static
++const std::optional<AuthCredentials>& Socks5WarmPool::GetProxyCredentials() {
++  return GetInstance()->credentials_;
++}
++
++size_t Socks5WarmPool::GetSizeForTesting() const {
++  return pending_.size() + warm_.size();
++}
++
++void Socks5WarmPool::Initialize(
++    const AddressList& proxy_addresses,
++    std::optional<AuthCredentials> credentials,
++    ClientSocketFactory* client_socket_factory,
++    NetLog* net_log,
++    const NetworkTrafficAnnotationTag& traffic_annotation) {
++  if (proxy_addresses.empty()) {
++    return;
++  }
++  const bool unchanged =
++      client_socket_factory_ == client_socket_factory &&
++      proxy_addresses_.size() == proxy_addresses.size() &&
++      !proxy_addresses_.empty() &&
++      proxy_addresses_.front() == proxy_addresses.front() &&
++      credentials_.has_value() == credentials.has_value();
++  if (unchanged) {
++    // Already primed for this configuration; just top up.
++    PurgeStale();
++    StartOneConnect();
++    return;
++  }
++
++  pending_.clear();
++  warm_.clear();
++  proxy_addresses_ = proxy_addresses;
++  credentials_ = std::move(credentials);
++  client_socket_factory_ = client_socket_factory;
++  net_log_ = net_log;
++  traffic_annotation_ = traffic_annotation;
++
++  StartOneConnect();
++}
++
++void Socks5WarmPool::StartOneConnect() {
++  if (!client_socket_factory_ || proxy_addresses_.empty()) {
++    return;
++  }
++  if (warm_.size() + pending_.size() >=
++      kTargetWarmSockets + kMaxPendingSockets) {
++    return;
++  }
++
++  auto entry = std::make_unique<PendingEntry>();
++  // Warm connects start from the first address (the pool is an
++  // optimization; the primary connect path keeps its own happy-eyeballs
++  // behavior).
++  entry->address_index = 0;
++  AddressList address_list(proxy_addresses_.front());
++  auto transport = client_socket_factory_->CreateTransportClientSocket(
++      address_list, /*socket_performance_watcher=*/nullptr,
++      /*network_quality_estimator=*/nullptr, net_log_, NetLogSource());
++  StreamSocket* socket = transport.get();
++  entry->socket = std::move(transport);
++  pending_.emplace(socket, std::move(*entry.release()));
++
++  int rv = socket->Connect(base::BindOnce(
++      &Socks5WarmPool::OnTcpConnectComplete, base::Unretained(this), socket));
++  if (rv != ERR_IO_PENDING) {
++    OnTcpConnectComplete(socket, rv);
++  }
++}
++
++std::unique_ptr<StreamSocket> Socks5WarmPool::TakeWarmSocket() {
++  PurgeStale();
++  StartOneConnect();
++  if (warm_.empty()) {
++    return nullptr;
++  }
++  std::unique_ptr<StreamSocket> socket = std::move(warm_.front().socket);
++  warm_.erase(warm_.begin());
++  StartOneConnect();
++  return socket;
++}
++
++void Socks5WarmPool::PurgeStale() {
++  const base::TimeTicks now = base::TimeTicks::Now();
++  std::erase_if(warm_, [&](const WarmEntry& entry) {
++    return now - entry.created > kWarmTtl;
++  });
++}
++
++void Socks5WarmPool::PromoteToWarm(StreamSocket* socket) {
++  auto it = pending_.find(socket);
++  if (it == pending_.end()) {
++    return;
++  }
++  PendingEntry entry = std::move(it->second);
++  pending_.erase(it);
++  warm_.emplace_back(std::move(entry.socket), base::TimeTicks::Now());
++}
++
++Socks5WarmPool::PendingEntry* Socks5WarmPool::FindPending(
++    StreamSocket* socket) {
++  auto it = pending_.find(socket);
++  return it == pending_.end() ? nullptr : &it->second;
++}
++
++void Socks5WarmPool::DestroyPending(StreamSocket* socket) {
++  pending_.erase(socket);
++}
++
++void Socks5WarmPool::OnTcpConnectComplete(StreamSocket* socket, int result) {
++  PendingEntry* entry = FindPending(socket);
++  if (!entry) {
++    return;
++  }
++  if (result != OK) {
++    DestroyPending(socket);
++    return;
++  }
++
++  // Build the greeting: offered methods are "no auth" plus
++  // username/password when credentials are configured.
++  std::vector<uint8_t> greet{kSOCKS5Version, 0x01, kNoAuthMethod};
++  if (credentials_) {
++    greet[1] = 0x02;
++    greet.push_back(kUsernamePasswordMethod);
++  }
++  auto base_buffer = base::MakeRefCounted<VectorIOBuffer>(std::move(greet));
++  entry->write_buf = base::MakeRefCounted<DrainableIOBuffer>(
++      std::move(base_buffer), base_buffer->size());
++
++  int rv = socket->Write(
++      entry->write_buf.get(), entry->write_buf->BytesRemaining(),
++      base::BindOnce(&Socks5WarmPool::OnGreetWriteComplete,
++                     base::Unretained(this), socket),
++      traffic_annotation_);
++  if (rv != ERR_IO_PENDING) {
++    OnGreetWriteComplete(socket, rv);
++  }
++}
++
++void Socks5WarmPool::OnGreetWriteComplete(StreamSocket* socket, int result) {
++  PendingEntry* entry = FindPending(socket);
++  if (!entry) {
++    return;
++  }
++  if (result < 0) {
++    DestroyPending(socket);
++    return;
++  }
++  entry->write_buf->DidConsume(result);
++  if (entry->write_buf->BytesRemaining() > 0) {
++    int rv = socket->Write(
++        entry->write_buf.get(), entry->write_buf->BytesRemaining(),
++        base::BindOnce(&Socks5WarmPool::OnGreetWriteComplete,
++                       base::Unretained(this), socket),
++        traffic_annotation_);
++    if (rv == ERR_IO_PENDING) {
++      return;
++    }
++    OnGreetWriteComplete(socket, rv);
++    return;
++  }
++  entry->write_buf.reset();
++  entry->read_buf = base::MakeRefCounted<GrowableIOBuffer>();
++  entry->read_buf->SetCapacity(kGreetReplySize);
++  int rv = socket->Read(
++      entry->read_buf.get(), entry->read_buf->RemainingCapacity(),
++      base::BindOnce(&Socks5WarmPool::OnGreetReadComplete,
++                     base::Unretained(this), socket));
++  if (rv != ERR_IO_PENDING) {
++    OnGreetReadComplete(socket, rv);
++  }
++}
++
++void Socks5WarmPool::OnGreetReadComplete(StreamSocket* socket, int result) {
++  PendingEntry* entry = FindPending(socket);
++  if (!entry) {
++    return;
++  }
++  if (result < 0) {
++    DestroyPending(socket);
++    return;
++  }
++  if (result == 0) {
++    // Unexpected close during greeting.
++    DestroyPending(socket);
++    return;
++  }
++  entry->read_buf->set_offset(entry->read_buf->offset() + result);
++  if (entry->read_buf->RemainingCapacity() > 0) {
++    int rv = socket->Read(
++        entry->read_buf.get(), entry->read_buf->RemainingCapacity(),
++        base::BindOnce(&Socks5WarmPool::OnGreetReadComplete,
++                       base::Unretained(this), socket));
++    if (rv == ERR_IO_PENDING) {
++      return;
++    }
++    OnGreetReadComplete(socket, rv);
++    return;
++  }
++
++  base::span<uint8_t> data = entry->read_buf->span_before_offset();
++  if (data[0] != kSOCKS5Version) {
++    DestroyPending(socket);
++    return;
++  }
++  const uint8_t method = data[1];
++  if (method == kUsernamePasswordMethod && credentials_) {
++    // RFC 1929 username/password subnegotiation.
++    entry->selected_method = method;
++    const std::string username = base::UTF16ToUTF8(credentials_->username());
++    const std::string password = base::UTF16ToUTF8(credentials_->password());
++    if (username.size() > 0xFF || password.size() > 0xFF) {
++      DestroyPending(socket);
++      return;
++    }
++    std::vector<uint8_t> auth;
++    auth.reserve(3 + username.size() + password.size());
++    auth.push_back(kUsernamePasswordVersion);
++    auth.push_back(static_cast<uint8_t>(username.size()));
++    auth.insert(auth.end(), username.begin(), username.end());
++    auth.push_back(static_cast<uint8_t>(password.size()));
++    auth.insert(auth.end(), password.begin(), password.end());
++    auto base_buffer = base::MakeRefCounted<VectorIOBuffer>(std::move(auth));
++    entry->write_buf = base::MakeRefCounted<DrainableIOBuffer>(
++        std::move(base_buffer), base_buffer->size());
++    int rv = socket->Write(
++        entry->write_buf.get(), entry->write_buf->BytesRemaining(),
++        base::BindOnce(&Socks5WarmPool::OnAuthWriteComplete,
++                       base::Unretained(this), socket),
++        traffic_annotation_);
++    if (rv != ERR_IO_PENDING) {
++      OnAuthWriteComplete(socket, rv);
++    }
++    return;
++  }
++  if (method != kNoAuthMethod) {
++    // No acceptable methods.
++    DestroyPending(socket);
++    return;
++  }
++
++  entry->selected_method = kNoAuthMethod;
++  entry->read_buf.reset();
++  PromoteToWarm(socket);
++}
++
++void Socks5WarmPool::OnAuthWriteComplete(StreamSocket* socket, int result) {
++  PendingEntry* entry = FindPending(socket);
++  if (!entry) {
++    return;
++  }
++  if (result < 0) {
++    DestroyPending(socket);
++    return;
++  }
++  entry->write_buf->DidConsume(result);
++  if (entry->write_buf->BytesRemaining() > 0) {
++    int rv = socket->Write(
++        entry->write_buf.get(), entry->write_buf->BytesRemaining(),
++        base::BindOnce(&Socks5WarmPool::OnAuthWriteComplete,
++                       base::Unretained(this), socket),
++        traffic_annotation_);
++    if (rv == ERR_IO_PENDING) {
++      return;
++    }
++    OnAuthWriteComplete(socket, rv);
++    return;
++  }
++  entry->write_buf.reset();
++  entry->read_buf = base::MakeRefCounted<GrowableIOBuffer>();
++  entry->read_buf->SetCapacity(kAuthReplySize);
++  int rv = socket->Read(
++      entry->read_buf.get(), entry->read_buf->RemainingCapacity(),
++      base::BindOnce(&Socks5WarmPool::OnAuthReadComplete,
++                     base::Unretained(this), socket));
++  if (rv != ERR_IO_PENDING) {
++    OnAuthReadComplete(socket, rv);
++  }
++}
++
++void Socks5WarmPool::OnAuthReadComplete(StreamSocket* socket, int result) {
++  PendingEntry* entry = FindPending(socket);
++  if (!entry) {
++    return;
++  }
++  if (result <= 0) {
++    DestroyPending(socket);
++    return;
++  }
++  entry->read_buf->set_offset(entry->read_buf->offset() + result);
++  if (entry->read_buf->RemainingCapacity() > 0) {
++    int rv = socket->Read(
++        entry->read_buf.get(), entry->read_buf->RemainingCapacity(),
++        base::BindOnce(&Socks5WarmPool::OnAuthReadComplete,
++                       base::Unretained(this), socket));
++    if (rv == ERR_IO_PENDING) {
++      return;
++    }
++    OnAuthReadComplete(socket, rv);
++    return;
++  }
++
++  base::span<uint8_t> data = entry->read_buf->span_before_offset();
++  // Version must be 1; a non-zero status means authentication failed.
++  if (data[0] != kUsernamePasswordVersion || data[1] != 0x00) {
++    DestroyPending(socket);
++    return;
++  }
++  entry->read_buf.reset();
++  PromoteToWarm(socket);
++}
++
++// Socks5WarmTunnelClientSocket finishes a SOCKS5 CONNECT over a socket
++// that has already completed method negotiation (and auth). It mirrors
++// SOCKS5ClientSocket's request/response handling without re-sending the
++// greeting.
++class Socks5WarmTunnelClientSocket : public StreamSocket {
++ public:
++  Socks5WarmTunnelClientSocket(
++      std::unique_ptr<StreamSocket> transport_socket,
++      const HostPortPair& destination,
++      const NetworkTrafficAnnotationTag& traffic_annotation)
++      : io_callback_(base::BindRepeating(&Socks5WarmTunnelClientSocket::
++                                             OnIOComplete,
++                                         base::Unretained(this))),
++        transport_socket_(std::move(transport_socket)),
++        destination_(destination),
++        net_log_(transport_socket_->NetLog()),
++        traffic_annotation_(traffic_annotation) {}
++
++  Socks5WarmTunnelClientSocket(const Socks5WarmTunnelClientSocket&) = delete;
++  Socks5WarmTunnelClientSocket& operator=(const Socks5WarmTunnelClientSocket&) =
++      delete;
++
++  ~Socks5WarmTunnelClientSocket() override { Disconnect(); }
++
++  // StreamSocket implementation.
++  int Connect(CompletionOnceCallback callback) override {
++    DCHECK_EQ(STATE_NONE, next_state_);
++    if (completed_handshake_) {
++      return OK;
++    }
++    next_state_ = STATE_REQUEST_WRITE;
++    int rv = DoLoop(OK);
++    if (rv == ERR_IO_PENDING) {
++      user_callback_ = std::move(callback);
++    }
++    return rv;
++  }
++
++  void Disconnect() override {
++    completed_handshake_ = false;
++    transport_socket_->Disconnect();
++    next_state_ = STATE_NONE;
++    user_callback_.Reset();
++  }
++
++  bool IsConnected() const override {
++    return completed_handshake_ && transport_socket_->IsConnected();
++  }
++
++  bool IsConnectedAndIdle() const override {
++    return completed_handshake_ && transport_socket_->IsConnectedAndIdle();
++  }
++
++  const NetLogWithSource& NetLog() const override { return net_log_; }
++
++  bool WasEverUsed() const override {
++    return transport_socket_->WasEverUsed();
++  }
++
++  NextProto GetNegotiatedProtocol() const override {
++    return transport_socket_->GetNegotiatedProtocol();
++  }
++
++  bool GetSSLInfo(SSLInfo* ssl_info) override {
++    return transport_socket_->GetSSLInfo(ssl_info);
++  }
++
++  int64_t GetTotalReceivedBytes() const override {
++    return transport_socket_->GetTotalReceivedBytes();
++  }
++
++  void ApplySocketTag(const SocketTag& tag) override {
++    transport_socket_->ApplySocketTag(tag);
++  }
++
++  int Read(IOBuffer* buf,
++           int buf_len,
++           CompletionOnceCallback callback) override {
++    DCHECK(completed_handshake_);
++    return transport_socket_->Read(buf, buf_len, std::move(callback));
++  }
++
++  int Write(IOBuffer* buf,
++            int buf_len,
++            CompletionOnceCallback callback,
++            const NetworkTrafficAnnotationTag& traffic_annotation) override {
++    DCHECK(completed_handshake_);
++    return transport_socket_->Write(buf, buf_len, std::move(callback),
++                                    traffic_annotation);
++  }
++
++  int SetReceiveBufferSize(int32_t size) override {
++    return transport_socket_->SetReceiveBufferSize(size);
++  }
++
++  int SetSendBufferSize(int32_t size) override {
++    return transport_socket_->SetSendBufferSize(size);
++  }
++
++  int GetPeerAddress(IPEndPoint* address) const override {
++    return transport_socket_->GetPeerAddress(address);
++  }
++
++  int GetLocalAddress(IPEndPoint* address) const override {
++    return transport_socket_->GetLocalAddress(address);
++  }
++
++ private:
++  enum State {
++    STATE_NONE,
++    STATE_REQUEST_WRITE,
++    STATE_REQUEST_WRITE_COMPLETE,
++    STATE_REQUEST_READ,
++    STATE_REQUEST_READ_COMPLETE,
++  };
++
++  void OnIOComplete(int result) {
++    int rv = DoLoop(result);
++    if (rv != ERR_IO_PENDING && !user_callback_.is_null()) {
++      std::move(user_callback_).Run(rv);
++    }
++  }
++
++  int DoLoop(int last_io_result) {
++    int rv = last_io_result;
++    do {
++      State state = next_state_;
++      next_state_ = STATE_NONE;
++      switch (state) {
++        case STATE_REQUEST_WRITE:
++          DCHECK_EQ(OK, rv);
++          rv = DoRequestWrite();
++          break;
++        case STATE_REQUEST_WRITE_COMPLETE:
++          rv = DoRequestWriteComplete(rv);
++          break;
++        case STATE_REQUEST_READ:
++          DCHECK_EQ(OK, rv);
++          rv = DoRequestRead();
++          break;
++        case STATE_REQUEST_READ_COMPLETE:
++          rv = DoRequestReadComplete(rv);
++          break;
++        default:
++          NOTREACHED() << "bad state";
++      }
++    } while (rv != ERR_IO_PENDING && next_state_ != STATE_NONE);
++    return rv;
++  }
++
++  int DoRequestWrite() {
++    if (0xFF < destination_.host().size()) {
++      return ERR_SOCKS_CONNECTION_FAILED;
++    }
++    next_state_ = STATE_REQUEST_WRITE_COMPLETE;
++    if (!write_buf_) {
++      std::vector<uint8_t> request;
++      request.reserve(7 + destination_.host().size());
++      request.push_back(0x05);
++      request.push_back(0x01);  // CONNECT command.
++      request.push_back(0x00);  // Reserved.
++      request.push_back(0x03);  // Domain name addressing.
++      const auto& host = destination_.host();
++      request.push_back(static_cast<uint8_t>(host.size()));
++      request.insert(request.end(), host.begin(), host.end());
++      auto nw_port = base::U16ToBigEndian(destination_.port());
++      request.insert(request.end(), nw_port.begin(), nw_port.end());
++      auto base_buffer =
++          base::MakeRefCounted<VectorIOBuffer>(std::move(request));
++      write_buf_ = base::MakeRefCounted<DrainableIOBuffer>(
++          std::move(base_buffer), base_buffer->size());
++    }
++    return transport_socket_->Write(write_buf_.get(),
++                                    write_buf_->BytesRemaining(), io_callback_,
++                                    traffic_annotation_);
++  }
++
++  int DoRequestWriteComplete(int result) {
++    if (result < 0) {
++      return result;
++    }
++    write_buf_->DidConsume(result);
++    if (write_buf_->BytesRemaining() == 0) {
++      write_buf_.reset();
++      next_state_ = STATE_REQUEST_READ;
++    } else {
++      next_state_ = STATE_REQUEST_WRITE;
++    }
++    return OK;
++  }
++
++  int DoRequestRead() {
++    next_state_ = STATE_REQUEST_READ_COMPLETE;
++    if (!read_buf_) {
++      read_buf_ = base::MakeRefCounted<GrowableIOBuffer>();
++      read_buf_->SetCapacity(kReadHeaderSize);
++    }
++    return transport_socket_->Read(read_buf_.get(),
++                                   read_buf_->RemainingCapacity(),
++                                   io_callback_);
++  }
++
++  int DoRequestReadComplete(int result) {
++    if (result < 0) {
++      return result;
++    }
++    if (result == 0) {
++      return ERR_SOCKS_CONNECTION_FAILED;
++    }
++    read_buf_->set_offset(read_buf_->offset() + result);
++
++    if (read_buf_->offset() == kReadHeaderSize) {
++      base::span<uint8_t> data = read_buf_->span_before_offset();
++      if (data[0] != 0x05 || data[2] != 0x00) {
++        return ERR_SOCKS_CONNECTION_FAILED;
++      }
++      if (data[1] != 0x00) {
++        return ERR_SOCKS_CONNECTION_FAILED;
++      }
++      const uint8_t address_type = data[3];
++      int additional_bytes_expected;
++      if (address_type == 0x03) {
++        additional_bytes_expected = data[4];
++      } else if (address_type == 0x01) {
++        additional_bytes_expected = sizeof(struct in_addr) - 1;
++      } else if (address_type == 0x04) {
++        additional_bytes_expected = sizeof(struct in6_addr) - 1;
++      } else {
++        return ERR_SOCKS_CONNECTION_FAILED;
++      }
++      additional_bytes_expected += 2;  // Port.
++      read_buf_->SetCapacity(kReadHeaderSize + additional_bytes_expected);
++      next_state_ = STATE_REQUEST_READ;
++      return OK;
++    }
++
++    if (read_buf_->RemainingCapacity() == 0) {
++      completed_handshake_ = true;
++      read_buf_.reset();
++      next_state_ = STATE_NONE;
++      return OK;
++    }
++
++    next_state_ = STATE_REQUEST_READ;
++    return OK;
++  }
++
++  static constexpr unsigned int kReadHeaderSize = 5;
++
++  CompletionRepeatingCallback io_callback_;
++  std::unique_ptr<StreamSocket> transport_socket_;
++  State next_state_ = STATE_NONE;
++  CompletionOnceCallback user_callback_;
++  scoped_refptr<DrainableIOBuffer> write_buf_;
++  scoped_refptr<GrowableIOBuffer> read_buf_;
++  bool completed_handshake_ = false;
++  const HostPortPair destination_;
++  NetLogWithSource net_log_;
++  NetworkTrafficAnnotationTag traffic_annotation_;
++};
++
++std::unique_ptr<StreamSocket> CreateSocks5WarmTunnelSocket(
++    std::unique_ptr<StreamSocket> warm_socket,
++    const HostPortPair& destination,
++    const NetworkTrafficAnnotationTag& traffic_annotation) {
++  return std::make_unique<Socks5WarmTunnelClientSocket>(
++      std::move(warm_socket), destination, traffic_annotation);
++}
++
++}  // namespace net
+--- a/net/quic/quic_session_pool.h
++++ b/net/quic/quic_session_pool.h
+@@ -462,7 +462,11 @@
+ 
+   // Creates a datagram socket. |source| is the NetLogSource for the entity
+   // trying to create the socket, if it has one.
++  // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md):
++  // takes the session key so a single-hop SOCKS5 proxy chain can be
++  // routed onto a SOCKS5 UDP-ASSOCIATE datagram socket.
+   std::unique_ptr<DatagramClientSocket> CreateSocket(
++      const QuicSessionKey& session_key,
+       NetLog* net_log,
+       const NetLogSource& source);
+ 
+--- a/net/quic/quic_session_pool.cc
++++ b/net/quic/quic_session_pool.cc
+@@ -74,6 +74,7 @@
+ #include "net/socket/next_proto.h"
+ #include "net/socket/socket_performance_watcher.h"
+ #include "net/socket/socket_performance_watcher_factory.h"
++#include "net/socket/socks5_datagram_client_socket.h"
+ #include "net/socket/udp_client_socket.h"
+ #include "net/spdy/multiplexed_session_creation_initiator.h"
+ #include "net/third_party/quiche/src/quiche/quic/core/crypto/crypto_protocol.h"
+@@ -870,8 +871,17 @@
+   std::unique_ptr<Job> job;
+   // Connect start time, but only for direct connections to a proxy.
+   std::optional<base::TimeTicks> proxy_connect_start_time = std::nullopt;
+-  if (session_key.proxy_chain().is_direct()) {
+-    if (session_key.session_usage() == SessionUsage::kProxy) {
++  // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md): a
++  // single-hop SOCKS5 chain runs the direct flow — the destination is
++  // resolved here and CreateSocket() hands the attempt a SOCKS5
++  // UDP-ASSOCIATE socket that relays through the proxy. ProxyJob (QUIC
++  // to a MASQUE proxy) is not applicable to SOCKS5.
++  const bool quic_over_socks5 =
++      session_key.proxy_chain().is_single_proxy() &&
++      session_key.proxy_chain().First().scheme() == ProxyServer::SCHEME_SOCKS5;
++  if (session_key.proxy_chain().is_direct() || quic_over_socks5) {
++    if (session_key.proxy_chain().is_direct() &&
++        session_key.session_usage() == SessionUsage::kProxy) {
+       proxy_connect_start_time = base::TimeTicks::Now();
+     }
+     job = std::make_unique<DirectJob>(
+@@ -1298,8 +1308,26 @@
+ }
+ 
+ std::unique_ptr<DatagramClientSocket> QuicSessionPool::CreateSocket(
++    const QuicSessionKey& session_key,
+     NetLog* net_log,
+     const NetLogSource& source) {
++  // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md):
++  // QUIC/HTTP-3 over a single-hop SOCKS5 proxy rides on a SOCKS5
++  // UDP-ASSOCIATE datagram socket (TCP control channel for
++  // greet/auth/associate, SOCKS5-UDP-framed datagrams to the relay)
++  // instead of a raw UDP socket. Stock Chromium cannot carry UDP
++  // through SOCKS5 and disables QUIC on SOCKS proxies entirely.
++  if (session_key.proxy_chain().is_single_proxy() &&
++      session_key.proxy_chain().First().scheme() ==
++          ProxyServer::SCHEME_SOCKS5) {
++    auto socket = std::make_unique<SOCKS5DatagramClientSocket>(
++        DatagramSocket::DEFAULT_BIND, session_key.proxy_chain().First(),
++        client_socket_factory_, host_resolver_, net_log, source);
++    if (params_.enable_socket_recv_optimization) {
++      socket->EnableRecvOptimization();
++    }
++    return socket;
++  }
+   auto socket = client_socket_factory_->CreateDatagramClientSocket(
+       DatagramSocket::DEFAULT_BIND, net_log, source);
+   if (params_.enable_socket_recv_optimization) {
+@@ -1752,7 +1780,8 @@
+   // TODO(crbug.com/40256842): This logic only knows how to try one IP
+   // endpoint.
+   std::unique_ptr<DatagramClientSocket> socket(
+-      CreateSocket(net_log.net_log(), net_log.source()));
++      // fp-patches: see CreateSocket (SOCKS5 UDP-ASSOCIATE routing).
++      CreateSocket(key.session_key(), net_log.net_log(), net_log.source()));
+ 
+   // If migrate_sessions_on_network_change_v2 is on, passing in
+   // handles::kInvalidNetworkHandle will bind the socket to the default network.
+@@ -1794,7 +1823,8 @@
+   // TODO(crbug.com/40256842): This logic only knows how to try one IP
+   // endpoint.
+   std::unique_ptr<DatagramClientSocket> socket(
+-      CreateSocket(net_log.net_log(), net_log.source()));
++      // fp-patches: see CreateSocket (SOCKS5 UDP-ASSOCIATE routing).
++      CreateSocket(key.session_key(), net_log.net_log(), net_log.source()));
+   DatagramClientSocket* socket_ptr = socket.get();
+   CompletionOnceCallback connect_and_configure_callback = base::BindOnce(
+       &QuicSessionPool::FinishCreateSession, weak_factory_.GetWeakPtr(),
+--- a/net/quic/quic_session_attempt.cc
++++ b/net/quic/quic_session_attempt.cc
+@@ -195,7 +195,17 @@
+         std::move(local_endpoint_), std::move(ip_endpoint_),
+         std::move(proxy_stream_), std::move(user_agent), net_log(), network_);
+   } else {
+-    if (base::FeatureList::IsEnabled(net::features::kAsyncQuicSession)) {
++    // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md):
++    // SOCKS5 UDP-ASSOCIATE sockets connect asynchronously by nature
++    // (TCP control handshake to the proxy before the relay UDP socket
++    // exists), so always create those sessions through the async path;
++    // the sync path cannot wait for the associate flow.
++    const bool quic_over_socks5 =
++        key().session_key().proxy_chain().is_single_proxy() &&
++        key().session_key().proxy_chain().First().scheme() ==
++            ProxyServer::SCHEME_SOCKS5;
++    if (base::FeatureList::IsEnabled(net::features::kAsyncQuicSession) ||
++        quic_over_socks5) {
+       return pool()->CreateSessionAsync(
+           base::BindOnce(&QuicSessionAttempt::OnCreateSessionComplete,
+                          weak_ptr_factory_.GetWeakPtr()),
+--- a/net/http/http_stream_factory_job.cc
++++ b/net/http/http_stream_factory_job.cc
+@@ -709,8 +709,13 @@
+ int HttpStreamFactory::Job::DoInitConnectionImpl() {
+   DCHECK(!connection_->is_initialized());
+ 
++  // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md): QUIC
++  // is allowed over a single-hop SOCKS5 proxy via UDP ASSOCIATE.
++  const bool quic_over_socks5 =
++      proxy_info_.proxy_chain().is_single_proxy() &&
++      proxy_info_.proxy_chain().First().scheme() == ProxyServer::SCHEME_SOCKS5;
+   if (using_quic_ && !proxy_info_.is_direct() &&
+-      !proxy_info_.proxy_chain().Last().is_quic()) {
++      !proxy_info_.proxy_chain().Last().is_quic() && !quic_over_socks5) {
+     // QUIC can not be spoken to non-QUIC proxies.  This error should not be
+     // user visible, because the non-alternative Job should be resumed.
+     return ERR_NO_SUPPORTED_PROXIES;
+@@ -841,7 +846,14 @@
+     // mechanisms would be worse than simply using H/1 or H/2 to reach the
+     // destination. The error for an invalid condition should not be user
+     // visible, because the non-alternative Job should be resumed.
+-    if (proxy_chain.AnyProxy(
++    // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md):
++    // single-hop SOCKS5 chains are exempt — QUIC rides over SOCKS5
++    // UDP ASSOCIATE (see QuicSessionPool::CreateSocket).
++    const bool quic_over_socks5 =
++        proxy_chain.is_single_proxy() &&
++        proxy_chain.First().scheme() == ProxyServer::SCHEME_SOCKS5;
++    if (!quic_over_socks5 &&
++        proxy_chain.AnyProxy(
+             [](const ProxyServer& s) { return !s.is_quic(); })) {
+       return ERR_NO_SUPPORTED_PROXIES;
+     }
+--- a/net/socket/socks_connect_job.h
++++ b/net/socket/socks_connect_job.h
+@@ -145,6 +145,12 @@
+   std::unique_ptr<StreamSocket> socket_;
+   raw_ptr<SOCKSClientSocket> socks_socket_ptr_;
+ 
++  // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md):
++  // SOCKS5 TCP socket taken from Socks5WarmPool (method negotiation and,
++  // when configured, username/password auth already completed). When
++  // set, DoSOCKSConnect finishes only the CONNECT request over it.
++  std::unique_ptr<StreamSocket> warm_socket_;
++
+   ResolveErrorInfo resolve_error_info_;
+ };
+ 
+--- a/net/socket/socks_connect_job.cc
++++ b/net/socket/socks_connect_job.cc
+@@ -8,6 +8,8 @@
+ #include <utility>
+ 
+ #include "base/functional/bind.h"
++#include "net/base/address_list.h"
++#include "net/base/ip_endpoint.h"
+ #include "net/base/net_errors.h"
+ #include "net/log/net_log_source_type.h"
+ #include "net/log/net_log_with_source.h"
+@@ -15,7 +17,9 @@
+ #include "net/socket/client_socket_handle.h"
+ #include "net/socket/connect_job_params.h"
+ #include "net/socket/socks5_client_socket.h"
++#include "net/socket/socks5_warm_pool.h"
+ #include "net/socket/socks_client_socket.h"
++#include "net/socket/stream_socket.h"
+ #include "net/socket/transport_connect_job.h"
+ 
+ namespace net {
+@@ -154,6 +158,22 @@
+   DCHECK(!transport_connect_job_);
+ 
+   next_state_ = STATE_TRANSPORT_CONNECT_COMPLETE;
++
++  // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md): if
++  // the SOCKS5 warm pool has a pre-connected (greeted/authenticated)
++  // TCP socket to the proxy, skip the transport connect entirely and
++  // run only the remaining CONNECT request over it. The pool is primed
++  // by DoSOCKSConnect below, so this bootstraps after the first SOCKS5
++  // connect of a session.
++  if (socks_params_->is_socks_v5()) {
++    warm_socket_ = Socks5WarmPool::GetInstance()->TakeWarmSocket();
++    if (warm_socket_) {
++      ResetTimer(kSOCKSConnectJobTimeout);
++      next_state_ = STATE_SOCKS_CONNECT;
++      return OK;
++    }
++  }
++
+   transport_connect_job_ = std::make_unique<TransportConnectJob>(
+       priority(), socket_tag(), common_connect_job_params(),
+       socks_params_->transport_params(), this, &net_log());
+@@ -174,10 +194,38 @@
+ int SOCKSConnectJob::DoSOCKSConnect() {
+   next_state_ = STATE_SOCKS_CONNECT_COMPLETE;
+ 
++  // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md): a
++  // socket taken from Socks5WarmPool already finished the SOCKS5
++  // greeting (and username/password auth when configured); finish only
++  // the CONNECT request over it.
++  if (socks_params_->is_socks_v5() && warm_socket_) {
++    socket_ = CreateSocks5WarmTunnelSocket(
++        std::move(warm_socket_), socks_params_->destination(),
++        socks_params_->traffic_annotation());
++    return socket_->Connect(
++        base::BindOnce(&SOCKSConnectJob::OnIOComplete, base::Unretained(this)));
++  }
++
+   // Add a SOCKS connection on top of the tcp socket.
+   if (socks_params_->is_socks_v5()) {
++    std::unique_ptr<StreamSocket> transport =
++        transport_connect_job_->PassSocket();
++
++    // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md):
++    // prime the warm pool with the proxy address this job connected
++    // to, so later SOCKS5 consumers (TCP tunnels and QUIC
++    // UDP-ASSOCIATE sockets) find pre-greeted, pre-authenticated
++    // sockets instead of re-running proxy auth per request.
++    IPEndPoint proxy_peer;
++    if (transport->GetPeerAddress(&proxy_peer) == OK) {
++      Socks5WarmPool::GetInstance()->Initialize(
++          AddressList(proxy_peer), Socks5WarmPool::GetProxyCredentials(),
++          client_socket_factory(), net_log().net_log(),
++          socks_params_->traffic_annotation());
++    }
++
+     socket_ = std::make_unique<SOCKS5ClientSocket>(
+-        transport_connect_job_->PassSocket(), socks_params_->destination(),
++        std::move(transport), socks_params_->destination(),
+         socks_params_->traffic_annotation());
+   } else {
+     auto socks_socket = std::make_unique<SOCKSClientSocket>(
+--- a/net/log/net_log_event_type_list.h
++++ b/net/log/net_log_event_type_list.h
+@@ -3247,6 +3247,21 @@
+ EVENT_TYPE(SOCKS5_HANDSHAKE_READ)
+ 
+ // ------------------------------------------------------------------------
++// SOCKS5DatagramClientSocket (fp-patches)
++// ------------------------------------------------------------------------
++
++// The start/end of a SOCKS5 UDP ASSOCIATE flow that establishes the UDP
++// relay target for QUIC/HTTP-3 over a SOCKS5 proxy. The END event has a
++// "net_error" parameter on failure, produced by
++// SOCKS5DatagramClientSocket::UdpTargetNetLogParams().
++EVENT_TYPE(SOCKS5_UDP_ASSOCIATE_TARGET)
++
++// A datagram framed with the SOCKS5 UDP header (RFC 1928 section 7) was
++// sent to the associate target. The event has a "bytes" parameter with
++// the payload size.
++EVENT_TYPE(SOCKS5_UDP_SEND_TO_TARGET)
++
++// ------------------------------------------------------------------------
+ // HTTP Authentication
+ // ------------------------------------------------------------------------
+ //
+--- a/net/BUILD.gn
++++ b/net/BUILD.gn
+@@ -1014,6 +1014,10 @@
+     "socket/socket_tag.h",
+     "socket/socks5_client_socket.cc",
+     "socket/socks5_client_socket.h",
++    "socket/socks5_datagram_client_socket.cc",
++    "socket/socks5_datagram_client_socket.h",
++    "socket/socks5_warm_pool.cc",
++    "socket/socks5_warm_pool.h",
+     "socket/socks_client_socket.cc",
+     "socket/socks_client_socket.h",
+     "socket/socks_connect_job.cc",

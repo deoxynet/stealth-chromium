@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 23] fingerprint: WebRTC port allocator force-out (IP masking)
+X-Spec: patches/21-webrtc-port-allocator.md
+X-Files: third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.cc
+
+---
+
+--- a/third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.cc
++++ b/third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.cc
+@@ -11,6 +11,7 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "base/functional/callback.h"
+ #include "base/functional/callback_helpers.h"
+@@ -41,7 +42,9 @@
+ #include "services/network/public/cpp/ip_address_space_util.h"
+ #include "services/network/public/mojom/ip_address_space.mojom-shared.h"
+ #include "third_party/blink/public/common/features.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/common/peerconnection/webrtc_ip_handling_policy.h"
++#include "third_party/blink/public/common/switches.h"
+ #include "third_party/blink/public/mojom/peerconnection/webrtc_ip_handling_policy.mojom-blink.h"
+ #include "third_party/blink/public/mojom/permissions/permission.mojom-blink.h"
+ #include "third_party/blink/public/mojom/permissions/permission_status.mojom-blink-forward.h"
+@@ -1094,6 +1097,18 @@
+           break;
+       }
+ 
++      // fp-patches: when the WebRTC IP spoof is configured, force UDP/local
++      // candidate gathering back on regardless of the privacy policy so
++      // there are host candidates for patches 24/25 to rewrite at the string
++      // level. enable_multiple_routes (adapter enumeration filtering) and
++      // allow_mdns_obfuscation keep their policy-derived values.
++      if (fingerprint::Enabled() &&
++          base::CommandLine::ForCurrentProcess()->HasSwitch(
++              switches::kFingerprintWebrtcIp)) {
++        port_config.enable_nonproxied_udp = true;
++        port_config.enable_default_local_candidate = true;
++      }
++
+       VLOG(3) << "WebRTC routing preferences: " << "policy: "
+               << ToString(webrtc_ip_handling_policy)
+               << ", multiple_routes: " << port_config.enable_multiple_routes

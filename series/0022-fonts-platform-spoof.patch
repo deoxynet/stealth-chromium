@@ -1,0 +1,981 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 22] fingerprint: font platform spoofing + per-platform font databases
+X-Spec: patches/18-fonts.md
+X-Files: third_party/blink/renderer/platform/fonts/font_cache.cc third_party/blink/renderer/platform/fonts/fingerprint_font_databases.h
+
+---
+
+--- a/third_party/blink/renderer/platform/fonts/font_cache.cc
++++ b/third_party/blink/renderer/platform/fonts/font_cache.cc
+@@ -43,9 +43,11 @@
+ #include "build/build_config.h"
+ #include "skia/ext/font_utils.h"
+ #include "third_party/blink/public/common/features.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/platform/platform.h"
+ #include "third_party/blink/renderer/platform/font_family_names.h"
+ #include "third_party/blink/renderer/platform/fonts/alternate_font_family.h"
++#include "third_party/blink/renderer/platform/fonts/fingerprint_font_databases.h"
+ #include "third_party/blink/renderer/platform/fonts/font_cache_client.h"
+ #include "third_party/blink/renderer/platform/fonts/font_data_cache.h"
+ #include "third_party/blink/renderer/platform/fonts/font_description.h"
+@@ -140,9 +142,21 @@
+     return SystemFontPlatformData(font_description);
+   }
+ #endif
++
++  // fp-patches: font platform spoofing (patches/18-fonts.md). Under a
++  // cross-platform persona, families that exist only on the host OS are
++  // reported unavailable (as the spoofed OS would), and Windows-only
++  // families are re-aimed at metric-compatible local fonts. Everything
++  // else proceeds through the stock cache.
++  FontFaceCreationParams effective_params(creation_params);
++  if (fingerprint_fonts::ResolveSpoofedFamily(creation_params,
++                                              effective_params) ==
++      fingerprint_fonts::FontLookupDecision::kUnavailable) {
++    return nullptr;
++  }
+ 
+   return font_platform_data_cache_.GetOrCreateFontPlatformData(
+-      this, font_description, creation_params, alternate_font_name);
++      this, font_description, effective_params, alternate_font_name);
+ }
+ 
+ void FontCache::AcceptLanguagesChanged(const String& accept_languages) {
+--- /dev/null
++++ b/third_party/blink/renderer/platform/fonts/fingerprint_font_databases.h
+@@ -0,0 +1,932 @@
++// Copyright 2026 The fp-patches Authors
++// Use of this source code is governed by a GPLv3 license that can be
++// found in the LICENSE file of the fp-patches distribution.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_FINGERPRINT_FONT_DATABASES_H_
++#define THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_FINGERPRINT_FONT_DATABASES_H_
++
++#include <initializer_list>
++#include <map>
++#include <set>
++#include <string>
++
++#include "base/command_line.h"
++#include "base/files/file_enumerator.h"
++#include "base/files/file_path.h"
++#include "base/no_destructor.h"
++#include "base/strings/string_util.h"
++#include "build/build_config.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
++#include "third_party/blink/renderer/platform/fonts/font_face_creation_params.h"
++#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
++#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
++
++// fp-patches: per-platform font databases for font platform spoofing
++// (spec patches/18-fonts.md). The three name lists are the vendor build's
++// recovered font inventories (patches/refs/font-databases.txt), kept
++// verbatim: they encode what a real Windows / macOS / Linux box has
++// installed, so availability decisions match the spoofed OS. Families that
++// exist only on the host OS are reported unavailable; Windows-only
++// families are re-aimed at metric-compatible local fonts.
++namespace blink::fingerprint_fonts {
++
++// The host OS this binary runs on, in the same vocabulary as
++// fingerprint::SpoofedPlatform(). kNone on platforms without a desktop-OS
++// persona (the spoof then applies without a host filter).
++inline fingerprint::Platform CurrentBuildPlatform() {
++#if BUILDFLAG(IS_WIN)
++  return fingerprint::Platform::kWindows;
++#elif BUILDFLAG(IS_MAC)
++  return fingerprint::Platform::kMacOs;
++#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
++  return fingerprint::Platform::kLinux;
++#else
++  return fingerprint::Platform::kNone;
++#endif
++}
++
++// Builds a lowercase-name set — mirrors the vendor's BuildLowercaseSet()
++// helper over initializer_list<const char*>.
++inline std::set<std::string> BuildLowercaseSet(
++    std::initializer_list<const char*> names) {
++  std::set<std::string> set;
++  for (const char* name : names) {
++    set.insert(base::ToLowerASCII(name));
++  }
++  return set;
++}
++
++// The recovered font inventories (lowercase family names).
++inline const std::set<std::string>& GetPlatformFonts(
++    fingerprint::Platform platform) {
++  static const base::NoDestructor<const std::set<std::string>> kWindowsFonts =
++      BuildLowercaseSet({
++        "Arial",
++        "Arial Black",
++        "Bahnschrift",
++        "Calibri",
++        "Cambria",
++        "Cambria Math",
++        "Candara",
++        "Cascadia Code",
++        "Cascadia Mono",
++        "Comic Sans MS",
++        "Consolas",
++        "Constantia",
++        "Corbel",
++        "Courier New",
++        "Ebrima",
++        "Franklin Gothic Medium",
++        "Gabriola",
++        "Gadugi",
++        "Georgia",
++        "HoloLens MDL2 Assets",
++        "Impact",
++        "Ink Free",
++        "Javanese Text",
++        "Leelawadee UI",
++        "Lucida Console",
++        "Lucida Sans Unicode",
++        "Malgun Gothic",
++        "Marlett",
++        "Microsoft Himalaya",
++        "Microsoft JhengHei",
++        "Microsoft New Tai Lue",
++        "Microsoft PhagsPa",
++        "Microsoft Sans Serif",
++        "Microsoft Tai Le",
++        "Microsoft YaHei",
++        "Microsoft Yi Baiti",
++        "MingLiU-ExtB",
++        "Mongolian Baiti",
++        "MS Gothic",
++        "MV Boli",
++        "Myanmar Text",
++        "Nirmala UI",
++        "Palatino Linotype",
++        "Segoe Fluent Icons",
++        "Segoe MDL2 Assets",
++        "Segoe Print",
++        "Segoe Script",
++        "Segoe UI",
++        "Segoe UI Emoji",
++        "Segoe UI Historic",
++        "Segoe UI Symbol",
++        "Segoe UI Variable",
++        "SimSun",
++        "Sitka",
++        "Sylfaen",
++        "Symbol",
++        "Tahoma",
++        "Times New Roman",
++        "Trebuchet MS",
++        "Verdana",
++        "Webdings",
++        "Wingdings",
++        "Yu Gothic",
++      });
++  static const base::NoDestructor<const std::set<std::string>> kMacosFonts =
++      BuildLowercaseSet({
++        "Academy Engraved LET",
++        "Adelle Sans Devanagari",
++        "AkayaKanadaka",
++        "AkayaTelivigala",
++        "Al Bayan",
++        "Al Firat",
++        "Al Khalil",
++        "Al Nile",
++        "Al Rafidain",
++        "Al Rafidain Al Fanni",
++        "Al Tarikh",
++        "Algiers",
++        "American Typewriter",
++        "Andale Mono",
++        "Annai MN",
++        "Apple Braille",
++        "Apple Chancery",
++        "Apple Color Emoji",
++        "Apple LiGothic",
++        "Apple LiSung",
++        "Apple SD Gothic Neo",
++        "Apple Symbols",
++        "AppleGothic",
++        "AppleMyungjo",
++        "Arial",
++        "Arial Hebrew",
++        "Arial Narrow",
++        "Arial Rounded MT",
++        "Arial Unicode MS",
++        "Arima Koshi",
++        "Arima Madurai",
++        "Asphalt",
++        "Athelas",
++        "Avenir",
++        "Avenir Next",
++        "Ayuthaya",
++        "Baghdad",
++        "Bai Jamjuree",
++        "Balega",
++        "Baloo 2",
++        "Baloo Bhai 2",
++        "Baloo Bhaijaan",
++        "Baloo Bhaina 2",
++        "Baloo Chettan 2",
++        "Baloo Da 2",
++        "Baloo Paaji 2",
++        "Baloo Tamma 2",
++        "Baloo Tammudu 2",
++        "Baloo Thambi 2",
++        "Bangla MN",
++        "Bangla Sangam MN",
++        "Bank Gothic",
++        "Baoli SC",
++        "Baoli TC",
++        "Baskerville",
++        "Basra",
++        "Bebas Neue",
++        "Beirut",
++        "BiauKaiHK",
++        "BiauKaiTC",
++        "Big Caslon",
++        "BIZ UDGothic",
++        "BIZ UDMincho",
++        "Blackmoor LET",
++        "BlairMdITC TT",
++        "BM DoHyeon OTF",
++        "BM HANNA 11yrs old OTF",
++        "BM HANNA Air OTF",
++        "BM HANNA Pro OTF",
++        "BM JUA OTF",
++        "BM KIRANGHAERANG OTF",
++        "BM YEONSUNG OTF",
++        "Bodoni 72",
++        "Bodoni 72 Oldstyle",
++        "Bodoni 72 Smallcaps",
++        "Bodoni Ornaments",
++        "Book Antiqua",
++        "Bookman Old Style",
++        "Bordeaux Roman Bold LET",
++        "Bradley Hand",
++        "Braganza",
++        "Brill Italic",
++        "Brill Roman",
++        "Brush Script MT",
++        "Cambay Devanagari",
++        "Canela",
++        "Canela Deck",
++        "Canela Text",
++        "Capitals",
++        "Carlito",
++        "Catamaran",
++        "Century Gothic",
++        "Century Schoolbook",
++        "Chakra Petch",
++        "Chalkboard",
++        "Chalkboard SE",
++        "Chalkduster",
++        "Charcoal CY",
++        "Charm",
++        "Charmonman",
++        "Charter",
++        "Cochin",
++        "Comic Sans MS",
++        "Copperplate",
++        "Corsiva Hebrew",
++        "Courier",
++        "Courier New",
++        "Damascus",
++        "Dash",
++        "Dear Joe Four",
++        "DecoType Naskh",
++        "Devanagari MT",
++        "Devanagari Sangam MN",
++        "DFKaiShu-SB-Estd-BF",
++        "Didot",
++        "Dijla",
++        "DIN Alternate",
++        "DIN Condensed",
++        "Diwan Kufi",
++        "Diwan Thuluth",
++        "Domaine Display",
++        "Druk",
++        "Druk Text",
++        "Druk Wide",
++        "Euphemia UCAS",
++        "Fahkwang",
++        "Fakt Slab Stencil Pro",
++        "Farah",
++        "Farisi",
++        "Forgotten Futurist",
++        "Founders Grotesk",
++        "Founders Grotesk Text",
++        "Futura",
++        "Galvji",
++        "Garamond",
++        "GB18030 Bitmap",
++        "Geeza Pro",
++        "Geneva",
++        "Geneva CY",
++        "Georgia",
++        "Gill Sans",
++        "Gotu",
++        "Grantha Sangam MN",
++        "Graphik",
++        "Graphik Compact",
++        "Gujarati MT",
++        "Gujarati Sangam MN",
++        "GungSeo",
++        "Gurmukhi MN",
++        "Gurmukhi MT",
++        "Gurmukhi Sangam MN",
++        "Hannotate SC",
++        "Hannotate TC",
++        "HanziPen SC",
++        "HanziPen TC",
++        "HeadLineA",
++        "Hei",
++        "Heiti SC",
++        "Heiti TC",
++        "Helvetica",
++        "Helvetica CY",
++        "Helvetica Neue",
++        "Herculanum",
++        "Hiragino Kaku Gothic Pro",
++        "Hiragino Kaku Gothic ProN",
++        "Hiragino Kaku Gothic Std",
++        "Hiragino Kaku Gothic StdN",
++        "Hiragino Maru Gothic Pro",
++        "Hiragino Maru Gothic ProN",
++        "Hiragino Mincho Pro",
++        "Hiragino Mincho ProN",
++        "Hiragino Sans",
++        "Hiragino Sans CNS",
++        "Hiragino Sans GB",
++        "Hiragino Sans TC",
++        "Hoefler Text",
++        "Hopper Script",
++        "Hubballi",
++        "Impact",
++        "InaiMathi",
++        "Iowan Old Style",
++        "ITF Devanagari",
++        "ITF Devanagari Marathi",
++        "Jaini",
++        "Jaini Purva",
++        "Jazz LET",
++        "Journal Sans New",
++        "K2D",
++        "Kai",
++        "Kailasa",
++        "Kaiti SC",
++        "Kaiti TC",
++        "Kannada MN",
++        "Kannada Sangam MN",
++        "Katari",
++        "Kavivanar",
++        "Kefa",
++        "Khmer MN",
++        "Khmer Sangam MN",
++        "Kigelia",
++        "Kigelia Arabic",
++        "Klee",
++        "Kodchasan",
++        "Kohinoor Bangla",
++        "Kohinoor Devanagari",
++        "Kohinoor Gujarati",
++        "Kohinoor Telugu",
++        "KoHo",
++        "Kokonor",
++        "Koufi Abjadi",
++        "Krub",
++        "Krungthep",
++        "KufiStandardGK",
++        "Lahore Gurmukhi",
++        "Laimoon",
++        "Lantinghei SC",
++        "Lantinghei TC",
++        "Lao MN",
++        "Lao Sangam MN",
++        "Lava Devanagari",
++        "Lava Kannada",
++        "Lava Telugu",
++        "Libian SC",
++        "Libian TC",
++        "LiHei Pro",
++        "LingWai SC",
++        "LingWai TC",
++        "LiSong Pro",
++        "Lucida Grande",
++        "Luminari",
++        "Maku",
++        "Malayalam MN",
++        "Malayalam Sangam MN",
++        "Mali",
++        "Marion",
++        "Marker Felt",
++        "Menlo",
++        "Microsoft Sans Serif",
++        "Mishafi",
++        "Mishafi Gold",
++        "Modak",
++        "Mona Lisa Solid ITC TT",
++        "Monaco",
++        "Mshtakan",
++        "Mukta",
++        "Mukta Malar",
++        "Mukta Vaani",
++        "MuktaMahee",
++        "Muna",
++        "Myanmar MN",
++        "Myanmar Sangam MN",
++        "Myriad Arabic",
++        "Nadeem",
++        "Nanum Brush Script",
++        "Nanum Pen Script",
++        "NanumGothic",
++        "NanumMyeongjo",
++        "New Peninim MT",
++        "Niramit",
++        "Nisan",
++        "Nom Na Tong",
++        "Noteworthy",
++        "Noto Nastaliq Urdu",
++        "Noto Sans Adlam",
++        "Noto Sans Armenian",
++        "Noto Sans Avestan",
++        "Noto Sans Bamum",
++        "Noto Sans Bassa Vah",
++        "Noto Sans Batak",
++        "Noto Sans Bhaiksuki",
++        "Noto Sans Brahmi",
++        "Noto Sans Buginese",
++        "Noto Sans Buhid",
++        "Noto Sans Canadian Aboriginal",
++        "Noto Sans Carian",
++        "Noto Sans Caucasian Albanian",
++        "Noto Sans Chakma",
++        "Noto Sans Cham",
++        "Noto Sans Coptic",
++        "Noto Sans Cuneiform",
++        "Noto Sans Cypriot",
++        "Noto Sans Duployan",
++        "Noto Sans Egyptian Hieroglyphs",
++        "Noto Sans Elbasan",
++        "Noto Sans Glagolitic",
++        "Noto Sans Gothic",
++        "Noto Sans Gunjala Gondi",
++        "Noto Sans Hanifi Rohingya",
++        "Noto Sans Hanunoo",
++        "Noto Sans Hatran",
++        "Noto Sans Imperial Aramaic",
++        "Noto Sans Inscriptional Pahlavi",
++        "Noto Sans Inscriptional Parthian",
++        "Noto Sans Javanese",
++        "Noto Sans Kaithi",
++        "Noto Sans Kannada",
++        "Noto Sans Kayah Li",
++        "Noto Sans Kharoshthi",
++        "Noto Sans Khojki",
++        "Noto Sans Khudawadi",
++        "Noto Sans Lepcha",
++        "Noto Sans Limbu",
++        "Noto Sans Linear A",
++        "Noto Sans Linear B",
++        "Noto Sans Lisu",
++        "Noto Sans Lycian",
++        "Noto Sans Lydian",
++        "Noto Sans Mahajani",
++        "Noto Sans Mandaic",
++        "Noto Sans Manichaean",
++        "Noto Sans Marchen",
++        "Noto Sans Masaram Gondi",
++        "Noto Sans Meetei Mayek",
++        "Noto Sans Mende Kikakui",
++        "Noto Sans Meroitic",
++        "Noto Sans Miao",
++        "Noto Sans Modi",
++        "Noto Sans Mongolian",
++        "Noto Sans Mro",
++        "Noto Sans Multani",
++        "Noto Sans Myanmar",
++        "Noto Sans Nabataean",
++        "Noto Sans New Tai Lue",
++        "Noto Sans Newa",
++        "Noto Sans NKo",
++        "Noto Sans Ol Chiki",
++        "Noto Sans Old Hungarian",
++        "Noto Sans Old Italic",
++        "Noto Sans Old North Arabian",
++        "Noto Sans Old Permic",
++        "Noto Sans Old Persian",
++        "Noto Sans Old South Arabian",
++        "Noto Sans Old Turkic",
++        "Noto Sans Oriya",
++        "Noto Sans Osage",
++        "Noto Sans Osmanya",
++        "Noto Sans Pahawh Hmong",
++        "Noto Sans Palmyrene",
++        "Noto Sans Pau Cin Hau",
++        "Noto Sans PhagsPa",
++        "Noto Sans Phoenician",
++        "Noto Sans Psalter Pahlavi",
++        "Noto Sans Rejang",
++        "Noto Sans Samaritan",
++        "Noto Sans Saurashtra",
++        "Noto Sans Sharada",
++        "Noto Sans Siddham",
++        "Noto Sans Sora Sompeng",
++        "Noto Sans Sundanese",
++        "Noto Sans Syloti Nagri",
++        "Noto Sans Syriac",
++        "Noto Sans Tagalog",
++        "Noto Sans Tagbanwa",
++        "Noto Sans Tai Le",
++        "Noto Sans Tai Tham",
++        "Noto Sans Tai Viet",
++        "Noto Sans Takri",
++        "Noto Sans Thaana",
++        "Noto Sans Tifinagh",
++        "Noto Sans Tirhuta",
++        "Noto Sans Ugaritic",
++        "Noto Sans Vai",
++        "Noto Sans Wancho",
++        "Noto Sans Warang Citi",
++        "Noto Sans Yi",
++        "Noto Sans Zawgyi",
++        "Noto Serif Ahom",
++        "Noto Serif Balinese",
++        "Noto Serif Hmong Nyiakeng",
++        "Noto Serif Kannada",
++        "Noto Serif Myanmar",
++        "Noto Serif Yezidi",
++        "November Bangla Traditional",
++        "October Compressed Devanagari",
++        "October Compressed Gujarati",
++        "October Compressed Gurmukhi",
++        "October Compressed Kannada",
++        "October Compressed Meetei Mayek",
++        "October Compressed Odia",
++        "October Compressed Ol Chiki",
++        "October Compressed Tamil",
++        "October Compressed Telugu",
++        "October Condensed Devanagari",
++        "October Condensed Gujarati",
++        "October Condensed Gurmukhi",
++        "October Condensed Kannada",
++        "October Condensed Meetei Mayek",
++        "October Condensed Odia",
++        "October Condensed Ol Chiki",
++        "October Condensed Tamil",
++        "October Condensed Telugu",
++        "October Devanagari",
++        "October Gujarati",
++        "October Gurmukhi",
++        "October Kannada",
++        "October Meetei Mayek",
++        "October Odia",
++        "October Ol Chiki",
++        "October Tamil",
++        "October Telugu",
++        "Optima",
++        "Oriya MN",
++        "Oriya Sangam MN",
++        "Osaka",
++        "Osaka-Mono",
++        "Padyakke Expanded One",
++        "Palatino",
++        "Papyrus",
++        "Party LET",
++        "PCMyungjo",
++        "Phosphate",
++        "PilGi",
++        "PingFang HK",
++        "PingFang MO",
++        "PingFang SC",
++        "PingFang TC",
++        "Plantagenet Cherokee",
++        "PortagoITC TT",
++        "Princetown LET",
++        "Produkt",
++        "Proxima Nova",
++        "PSL Ornanong Pro",
++        "PT Mono",
++        "PT Sans",
++        "PT Sans Caption",
++        "PT Sans Narrow",
++        "PT Serif",
++        "PT Serif Caption",
++        "Publico Headline",
++        "Publico Text",
++        "Quotes Caps",
++        "Quotes Script",
++        "Raanana",
++        "Raya",
++        "Rockwell",
++        "Sama Devanagari",
++        "Sama Gujarati",
++        "Sama Gurmukhi",
++        "Sama Kannada",
++        "Sama Malayalam",
++        "Sama Tamil",
++        "Sana",
++        "Santa Fe LET",
++        "Sarabun",
++        "Sathu",
++        "Sauber Script",
++        "Savoye LET",
++        "Scheme",
++        "SchoolHouse Cursive B",
++        "SchoolHouse Printed A",
++        "Seravek",
++        "SF Compact",
++        "SF Compact Display",
++        "SF Compact Rounded",
++        "SF Compact Text",
++        "SF Mono",
++        "SF Pro",
++        "SF Pro Display",
++        "SF Pro Rounded",
++        "SF Pro Text",
++        "SFNS Display",
++        "SFNS Text",
++        "Shobhika",
++        "Shree Devanagari 714",
++        "SignPainter-HouseScript",
++        "Silom",
++        "SimSong",
++        "Sinhala MN",
++        "Sinhala Sangam MN",
++        "Skia",
++        "Snell Roundhand",
++        "Somer",
++        "Songti SC",
++        "Songti TC",
++        "Spot Mono",
++        "Srisakdi",
++        "STFangsong",
++        "STHeiti",
++        "STIXGeneral",
++        "STIXIntegralsD",
++        "STIXIntegralsSm",
++        "STIXIntegralsUp",
++        "STIXIntegralsUpD",
++        "STIXIntegralsUpSm",
++        "STIXNonUnicode",
++        "STIXSizeFiveSym",
++        "STIXSizeFourSym",
++        "STIXSizeOneSym",
++        "STIXSizeThreeSym",
++        "STIXSizeTwoSym",
++        "STIX Two Math",
++        "STIX Two Text",
++        "STIXVariants",
++        "STKaiti",
++        "STSong",
++        "STXihei",
++        "Stone Sans ITC TT",
++        "Stone Sans Sem ITC TT",
++        "Sukhumvit Set",
++        "Superclarendon",
++        "Symbol",
++        "Synchro LET",
++        "Tahoma",
++        "Tamil MN",
++        "Tamil Sangam MN",
++        "Telugu MN",
++        "Telugu Sangam MN",
++        "The Hand Serif",
++        "Thonburi",
++        "Times",
++        "Times New Roman",
++        "Tiro Bangla",
++        "Tiro Devanagari Hindi",
++        "Tiro Devanagari Marathi",
++        "Tiro Devanagari Sanskrit",
++        "Tiro Gurmukhi",
++        "Tiro Kannada",
++        "Tiro Tamil",
++        "Tiro Telugu",
++        "Toppan Bunkyu Gothic",
++        "Toppan Bunkyu Midashi Gothic",
++        "Toppan Bunkyu Midashi Mincho",
++        "Toppan Bunkyu Mincho",
++        "Trattatello",
++        "Trebuchet MS",
++        "Tsukushi A Round Gothic",
++        "Tsukushi B Round Gothic",
++        "Tw Cen MT",
++        "Type Embellishments One LET",
++        "Verdana",
++        "Waseem",
++        "Wawati SC",
++        "Wawati TC",
++        "Webdings",
++        "Weibei SC",
++        "Weibei TC",
++        "Wingdings",
++        "Wingdings 2",
++        "Wingdings 3",
++        "Xingkai SC",
++        "Xingkai TC",
++        "Yaziji",
++        "Yuanti SC",
++        "Yuanti TC",
++        "YuGothic",
++        "YuKyokasho",
++        "YuKyokasho Yoko",
++        "YuMincho",
++        "YuMincho +36p Kana",
++        "Yuppy SC",
++        "Yuppy TC",
++        "Zapf Dingbats",
++        "Zapfino",
++        "Zawra",
++      });
++  static const base::NoDestructor<const std::set<std::string>> kLinuxFonts =
++      BuildLowercaseSet({
++        "Ubuntu",
++        "Ubuntu Condensed",
++        "Ubuntu Light",
++        "Ubuntu Mono",
++        "Ubuntu Sans",
++        "Ubuntu Sans Mono",
++        "DejaVu Sans",
++        "DejaVu Sans Condensed",
++        "DejaVu Sans Light",
++        "DejaVu Sans Mono",
++        "DejaVu Serif",
++        "DejaVu Serif Condensed",
++        "DejaVu Math TeX Gyre",
++        "Liberation Sans",
++        "Liberation Sans Narrow",
++        "Liberation Serif",
++        "Liberation Mono",
++        "Noto Sans",
++        "Noto Sans Display",
++        "Noto Sans Mono",
++        "Noto Serif",
++        "Noto Serif Display",
++        "Noto Mono",
++        "Noto Color Emoji",
++        "Nimbus Sans",
++        "Nimbus Sans L",
++        "Nimbus Sans Narrow",
++        "Nimbus Roman",
++        "Nimbus Roman No9 L",
++        "Nimbus Mono",
++        "Nimbus Mono L",
++        "Nimbus Mono PS",
++        "FreeSans",
++        "FreeSerif",
++        "FreeMono",
++        "Cantarell",
++        "Droid Sans",
++        "Droid Sans Mono",
++        "Droid Serif",
++        "Droid Sans Fallback",
++        "Tlwg Mono",
++        "Tlwg Typewriter",
++        "Loma",
++        "Garuda",
++        "Norasi",
++        "Padauk",
++        "LKLUG",
++      });
++  static const base::NoDestructor<const std::set<std::string>> kEmptyFonts =
++      BuildLowercaseSet({});
++  switch (platform) {
++    case fingerprint::Platform::kWindows:
++      return **kWindowsFonts;
++    case fingerprint::Platform::kMacOs:
++      return **kMacosFonts;
++    case fingerprint::Platform::kLinux:
++      return **kLinuxFonts;
++    case fingerprint::Platform::kNone:
++      break;
++  }
++  return **kEmptyFonts;
++}
++
++// Generic and basic families that must always resolve and are exempt from
++// substitution (vendor blink::IsBasicFont set, verbatim).
++inline bool IsBasicFont(const std::string& lowercase_family) {
++  static const base::NoDestructor<const std::set<std::string>> kBasicFonts =
++      BuildLowercaseSet({
++          "-webkit-standard",
++          "system-ui",
++          "arial",
++          "courier new",
++          "microsoft sans serif",
++          "roboto",
++          "sans",
++          "times new roman",
++          "cursive",
++          "fantasy",
++          "monospace",
++          "sans-serif",
++          "serif",
++          "math",
++          "blinkmacsystemfont",
++          "noto color emoji",
++          "dejavu math tex gyre",
++          "franklin gothic",
++          "franklin gothic medium",
++      });
++  return kBasicFonts->count(lowercase_family) > 0;
++}
++
++// Windows-only family (lowercase) -> metric-compatible local replacement.
++// The vendor's kWindowsAliases contents were not recovered; these entries
++// target the recovered Linux font inventory (Liberation = Arial/Times/
++// Courier metric-compatible, DejaVu for the humanist sans/mono set, Noto
++// for script coverage, Noto Color Emoji for Segoe UI Emoji).
++inline const std::map<std::string, std::string>& WindowsAliases() {
++  static const base::NoDestructor<const std::map<std::string, std::string>>
++      kWindowsAliases = std::map<std::string, std::string>{
++          {"arial black", "Liberation Sans"},
++          {"bahnschrift", "Liberation Sans Narrow"},
++          {"calibri", "Liberation Sans"},
++          {"cambria", "Liberation Serif"},
++          {"cambria math", "DejaVu Math TeX Gyre"},
++          {"candara", "Liberation Sans"},
++          {"cascadia code", "Liberation Mono"},
++          {"cascadia mono", "Liberation Mono"},
++          {"consolas", "Liberation Mono"},
++          {"constantia", "Liberation Serif"},
++          {"corbel", "Liberation Sans"},
++          {"ebrima", "Noto Sans"},
++          {"franklin gothic medium", "Liberation Sans Narrow"},
++          {"gabriola", "Liberation Serif"},
++          {"gadugi", "Noto Sans"},
++          {"hololens mdl2 assets", "DejaVu Sans"},
++          {"ink free", "Liberation Sans"},
++          {"javanese text", "Noto Sans"},
++          {"leelawadee ui", "Noto Sans"},
++          {"lucida console", "DejaVu Sans Mono"},
++          {"lucida sans unicode", "DejaVu Sans"},
++          {"malgun gothic", "Noto Sans"},
++          {"marlett", "DejaVu Sans"},
++          {"microsoft himalaya", "Noto Sans"},
++          {"microsoft jhenghei", "Noto Sans"},
++          {"microsoft new tai lue", "Noto Sans"},
++          {"microsoft phagspa", "Noto Sans"},
++          {"microsoft sans serif", "Liberation Sans"},
++          {"microsoft tai le", "Noto Sans"},
++          {"microsoft yahei", "Noto Sans"},
++          {"microsoft yi baiti", "Noto Sans"},
++          {"mingliu-extb", "Noto Sans"},
++          {"mongolian baiti", "Noto Sans"},
++          {"ms gothic", "Noto Sans"},
++          {"mv boli", "Noto Sans"},
++          {"myanmar text", "Noto Sans"},
++          {"nirmala ui", "Noto Sans"},
++          {"palatino linotype", "Liberation Serif"},
++          {"segoe fluent icons", "DejaVu Sans"},
++          {"segoe mdl2 assets", "DejaVu Sans"},
++          {"segoe print", "Liberation Sans"},
++          {"segoe script", "Liberation Sans"},
++          {"segoe ui", "DejaVu Sans"},
++          {"segoe ui emoji", "Noto Color Emoji"},
++          {"segoe ui historic", "DejaVu Sans"},
++          {"segoe ui symbol", "DejaVu Sans"},
++          {"segoe ui variable", "DejaVu Sans"},
++          {"simsun", "Noto Sans"},
++          {"sitka", "Liberation Serif"},
++          {"sylfaen", "Liberation Serif"},
++          {"symbol", "DejaVu Sans"},
++          {"tahoma", "DejaVu Sans"},
++          {"trebuchet ms", "Liberation Sans"},
++          {"verdana", "DejaVu Sans"},
++          {"webdings", "DejaVu Sans"},
++          {"wingdings", "DejaVu Sans"},
++          {"yu gothic", "Noto Sans"},
++      };
++  return **kWindowsAliases;
++}
++
++// Families provided as real font files under --fingerprint-fonts-dir
++// (convention: "<Family>.ttf" / ".otf" / ".ttc", basename = family name).
++// Scanned once; the directory acts as an extension of the spoofed
++// platform's database, so user-shipped persona fonts report available.
++// For real metrics the directory must also be fontconfig-visible (e.g.
++// symlinked into ~/.fonts); family matching here only decides
++// availability, since FontFaceCreationParams at 146 has no create-from-
++// file path (kCreateFontByFciIdAndTtcIndex is fontconfig-internal).
++inline bool FontsDirProvides(const std::string& lowercase_family) {
++  static const base::NoDestructor<const std::set<std::string>> kProvided = [] {
++    std::set<std::string> families;
++    const std::string dir = base::CommandLine::ForCurrentProcess()
++                                ->GetSwitchValueASCII(
++                                    switches::kFingerprintFontsDir);
++    if (dir.empty()) {
++      return families;
++    }
++    base::FileEnumerator enumerator(base::FilePath::FromUTF8Unsafe(dir),
++                                     /*recursive=*/false,
++                                     base::FileEnumerator::FILES);
++    for (base::FilePath path = enumerator.Next(); !path.empty();
++         path = enumerator.Next()) {
++      std::string name = path.BaseName().RemoveExtension().AsUTF8Unsafe();
++      if (!name.empty()) {
++        families.insert(base::ToLowerASCII(name));
++      }
++    }
++    return families;
++  }();
++  return kProvided->count(lowercase_family) > 0;
++}
++
++// Decision for a family-based font lookup under an active persona.
++enum class FontLookupDecision {
++  kStock,        // fingerprinting off, no persona, or non-family lookup
++  kUnavailable,  // family exists on the host OS but not on the spoofed OS
++  kProceed,      // available or unknown everywhere; |out_params| may be
++                 // rewritten to a metric-compatible local family
++};
++
++// Core hook helper for FontCache::GetFontPlatformData. Availability is
++// decided on the requested family name (Windows aliasing happens after,
++// on the proceed path — aliasing first would misclassify the aliased
++// local name as host-only).
++inline FontLookupDecision ResolveSpoofedFamily(
++    const FontFaceCreationParams& creation_params,
++    FontFaceCreationParams& out_params) {
++  if (!fingerprint::Enabled() ||
++      creation_params.CreationType() != kCreateFontByFamily) {
++    return FontLookupDecision::kStock;
++  }
++  const fingerprint::Platform spoofed = fingerprint::SpoofedPlatform();
++  const fingerprint::Platform current = CurrentBuildPlatform();
++  if (spoofed == fingerprint::Platform::kNone || spoofed == current) {
++    // Vendor gate: is_cross_platform = !(spoofed_platform == current_os).
++    return FontLookupDecision::kStock;
++  }
++
++  const std::string family =
++      base::ToLowerASCII(creation_params.Family().Utf8());
++  if (IsBasicFont(family)) {
++    return FontLookupDecision::kProceed;
++  }
++
++  const bool known_on_spoofed =
++      GetPlatformFonts(spoofed).count(family) > 0 || FontsDirProvides(family);
++  if (!known_on_spoofed &&
++      GetPlatformFonts(current).count(family) > 0) {
++    // Host-only family: report it as unavailable, as the spoofed OS would.
++    return FontLookupDecision::kUnavailable;
++  }
++
++  if (spoofed == fingerprint::Platform::kWindows) {
++    const auto it = WindowsAliases().find(family);
++    if (it != WindowsAliases().end()) {
++      // Intern the substituted name so subsequent matching uses it.
++      out_params = FontFaceCreationParams(
++          AtomicString(String::FromUTF8(it->second)));
++    }
++  }
++  return FontLookupDecision::kProceed;
++}
++
++}  // namespace blink::fingerprint_fonts
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_FINGERPRINT_FONT_DATABASES_H_

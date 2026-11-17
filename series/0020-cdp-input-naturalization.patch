@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 20] fingerprint: naturalize CDP-injected input (timestamp jitter, key code derivation, force NaN)
+X-Spec: patches/29-cdp-input-timing.md
+X-Files: content/browser/devtools/protocol/input_handler.cc
+
+---
+
+--- a/content/browser/devtools/protocol/input_handler.cc
++++ b/content/browser/devtools/protocol/input_handler.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <stddef.h>
+ 
++#include <limits>
+ #include <memory>
+ #include <tuple>
+ #include <utility>
+@@ -41,6 +42,7 @@
+ #include "content/common/input/synthetic_tap_gesture.h"
+ #include "content/common/input/synthetic_tap_gesture_params.h"
+ #include "content/public/common/content_features.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/common/input/web_input_event.h"
+ #include "third_party/blink/public/common/page/page_zoom.h"
+ #include "ui/base/dragdrop/mojom/drag_drop_types.mojom-shared.h"
+@@ -49,6 +51,7 @@
+ #include "ui/events/event_constants.h"
+ #include "ui/events/gesture_detection/gesture_provider_config_helper.h"
+ #include "ui/events/keycodes/dom/keycode_converter.h"
++#include "ui/events/keycodes/keyboard_code_conversion.h"
+ #include "ui/gfx/geometry/point_f.h"
+ #include "ui/gfx/range/range.h"
+ 
+@@ -126,9 +129,22 @@
+ base::TimeTicks GetEventTimeTicks(const std::optional<double>& timestamp) {
+   // Convert timestamp, in seconds since unix epoch, to an event timestamp
+   // which is time ticks since platform start time.
+-  return timestamp.has_value()
+-             ? base::Seconds(timestamp.value()) + base::TimeTicks::UnixEpoch()
+-             : base::TimeTicks::Now();
++  if (timestamp.has_value()) {
++    return base::Seconds(timestamp.value()) + base::TimeTicks::UnixEpoch();
++  }
++  base::TimeTicks now = base::TimeTicks::Now();
++  // fp-patches: untimed CDP input carries the exact dispatch instant; real
++  // OS input never does. Skew each event by a fresh 0..2999 µs (LCG over
++  // the tick value itself, vendor constants) so event.timeStamp looks
++  // organic. Explicit CDP timestamps pass through untouched.
++  if (blink::fingerprint::Enabled()) {
++    const int64_t ticks = now.ToInternalValue();
++    uint32_t hash = static_cast<uint32_t>(ticks >> 32) ^
++                    static_cast<uint32_t>(ticks);
++    hash = hash * 0x19660D + 0x3C6EF35F;
++    return now + base::Microseconds(hash % 3000);
++  }
++  return now;
+ }
+ 
+ bool SetKeyboardEventText(
+@@ -451,7 +467,16 @@
+   mouse_event->button = event_button;
+   mouse_event->click_count = click_count.value_or(0);
+   mouse_event->pointer_type = GetPointerType(pointer_type.value_or(""));
+-  mouse_event->force = force.value_or(0);
++  mouse_event->force =
++      force.has_value()
++          ? static_cast<float>(force.value())
++          // fp-patches: real OS mouse events keep the NaN default of
++          // WebPointerProperties::force; stock CDP forced 0.0, making
++          // pressure/force JS-visible behavior differ between real and
++          // synthetic input.
++          : blink::fingerprint::Enabled()
++                ? std::numeric_limits<float>::quiet_NaN()
++                : 0;
+   mouse_event->tangential_pressure = tangential_pressure.value_or(0);
+   mouse_event->tilt_x = tilt_x.value_or(0);
+   mouse_event->tilt_y = tilt_y.value_or(0);
+@@ -1207,6 +1232,18 @@
+   if (key.has_value()) {
+     event.dom_key =
+         static_cast<int>(ui::KeycodeConverter::KeyStringToDomKey(key.value()));
++  }
++
++  // fp-patches: CDP callers commonly omit `code`; stock leaves dom_code =
++  // NONE (event.code == "" in the page — a synthetic-input tell). Derive
++  // the US-layout DomCode implied by `key`, as a real key press would.
++  if (!code.has_value() && key.has_value() &&
++      blink::fingerprint::Enabled()) {
++    const ui::DomCode derived_code = ui::UsLayoutDomKeyToDomCode(
++        ui::KeycodeConverter::KeyStringToDomKey(key.value()));
++    if (derived_code != ui::DomCode::NONE) {
++      event.dom_code = static_cast<int>(derived_code);
++    }
+   }
+ 
+   if (!host_ || !host_->GetRenderWidgetHost()) {

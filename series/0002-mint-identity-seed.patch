@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fp-patches contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 2/33] fingerprint: mint random identity seed at browser startup
+X-Spec: patches/01-identity-seed.md
+X-Files: chrome/app/chrome_main_delegate.cc
+
+---
+
+--- a/chrome/app/chrome_main_delegate.cc
++++ b/chrome/app/chrome_main_delegate.cc
+@@ -29,6 +29,8 @@
+ #include "base/process/process.h"
+ #include "base/process/process_handle.h"
+ #include "base/profiler/thread_group_profiler.h"
++#include "base/rand_util.h"
++#include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
+ #include "base/strings/sys_string_conversions.h"
+ #include "base/strings/utf_string_conversions.h"
+@@ -92,6 +94,7 @@
+ #include "extensions/buildflags/buildflags.h"
+ #include "net/http/http_cache.h"
+ #include "net/url_request/url_request.h"
++#include "third_party/blink/public/common/switches.h"
+ #include "pdf/buildflags.h"
+ #include "printing/buildflags/buildflags.h"
+ #include "services/tracing/public/cpp/stack_sampling/tracing_sampler_profiler.h"
+@@ -1055,6 +1058,20 @@
+   const base::CommandLine& command_line =
+       *base::CommandLine::ForCurrentProcess();
+ 
++  // fp-patches: mint the per-session identity seed. Every deterministic
++  // spoof downstream derives from this single value; when the launcher does
++  // not pin one (--fingerprint=<decimal u64>) a fresh random identity is
++  // used for this session. Children inherit it via the renderer switch
++  // propagation table, so only the browser process mints.
++  if (!command_line.HasSwitch(switches::kProcessType) &&
++      !command_line.HasSwitch(blink::switches::kFingerprint)) {
++    uint64_t fingerprint_seed = 0;
++    base::RandBytes(&fingerprint_seed, sizeof(fingerprint_seed));
++    base::CommandLine::ForCurrentProcess()->AppendSwitchNative(
++        blink::switches::kFingerprint,
++        base::NumberToString(fingerprint_seed));
++  }
++
+   // Only allow disabling web security via the command-line flag if the user has
+   // specified a distinct profile directory. This still enables tests to disable
+   // web security by setting the kWebKitWebSecurityEnabled pref directly.

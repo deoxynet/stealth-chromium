@@ -2,7 +2,7 @@ From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 0041] fingerprint: coherent identity across frames under CDP user-agent overrides
-X-Spec: Pro-build CDP UA-override coherence (CHANGELOG 0.5.2); docs/features/cdp-ua-override-coherence.md
+X-Spec: CDP UA-override coherence 
 X-Files: content/browser/devtools/protocol/emulation_handler.cc content/browser/devtools/protocol/emulation_handler.h content/renderer/render_frame_impl.cc third_party/blink/public/common/fingerprint/cdp_ua_override.h
 
 ---

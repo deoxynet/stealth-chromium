@@ -2,7 +2,7 @@ From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 0042] fingerprint: host-font isolation behind the persona allowlist
-X-Spec: Pro-build host-font isolation (CHANGELOG 0.5.8, 0.7.x); workspace EMPIRICAL.md document.fonts.check leak; docs/features/host-font-isolation.md
+X-Spec: Host-font isolation 
 X-Files: third_party/blink/renderer/platform/fonts/font_cache.cc third_party/blink/renderer/platform/fonts/fingerprint_host_font_isolation.h docs/features/host-font-isolation.md
 
 ---

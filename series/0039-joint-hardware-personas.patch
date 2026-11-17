@@ -2,7 +2,7 @@ From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 0039] fingerprint: jointly-sampled hardware device profiles
-X-Spec: Pro-build joint hardware personas (CHANGELOG 0.4.8, 148.0.7778.215.5); docs/features/joint-hardware-personas.md
+X-Spec: joint hardware personas 
 X-Files: third_party/blink/renderer/core/fingerprint/device_profiles.h third_party/blink/renderer/core/fingerprint/screen_dimensions.h third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc third_party/blink/renderer/core/frame/navigator_device_memory.cc third_party/blink/renderer/modules/webgl/gpu_fingerprint.cc third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h
 
 ---

@@ -2,7 +2,7 @@ From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 40/40] fingerprint: reported Chrome version decoupled from build base
-X-Spec: Pro-build version tracking (CHANGELOG 0.4.12/0.5.2); docs/features/reported-version-override.md
+X-Spec: version tracking 
 X-Files: base/version_info/version_info.h base/version_info/version_info.cc components/version_info/version_info_with_user_agent.h components/version_info/version_info_with_user_agent.cc components/embedder_support/user_agent_utils.cc content/browser/renderer_host/render_process_host_impl.cc third_party/blink/common/switches.cc third_party/blink/public/common/switches.h third_party/blink/public/common/fingerprint/reported_version.h
 
 ---

@@ -24,11 +24,6 @@ V8 sources, resolved via the DEPS-pinned v8 revision) (every surface in the spec
 approximations are listed in
 [docs/patch-status.md](docs/patch-status.md) "Open items").
 
-Patches 0039–0042 port the four serious CloakBrowser **Pro-build features**
-(joint hardware personas, reported-version tracking, CDP user-agent-override
-coherence, host-font isolation) — design notes in
-[docs/features/](docs/features/).
-
 
 ## Using the series
 
@@ -85,10 +80,3 @@ tools/build Dockerfile for a full-browser build environment
 ## Attribution & license
 
 - The series is licensed under **GPL-3.0** ([LICENSE](LICENSE)).
-- Noise-family surfaces (canvas/measureText/clientRects) reimplement
-  behaviors first shipped in the GPL-3.0 **Bromite/Cromite** project
-  (canvas image-data noise by csagan5), with the RNG replaced by
-  seed-deterministic hashing as observed in the vendor build.
-- The NVIDIA GPU model database lineage is **ungoogled-chromium**.
-- Everything else is an original reimplementation from the behavioral
-  spec produced by the reversing effort.

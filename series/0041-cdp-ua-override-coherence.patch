@@ -1,0 +1,475 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stealth Chromium contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 0041] fingerprint: coherent identity across frames under CDP user-agent overrides
+X-Spec: Pro-build CDP UA-override coherence (CHANGELOG 0.5.2); docs/features/cdp-ua-override-coherence.md
+X-Files: content/browser/devtools/protocol/emulation_handler.cc content/browser/devtools/protocol/emulation_handler.h content/renderer/render_frame_impl.cc third_party/blink/public/common/fingerprint/cdp_ua_override.h
+
+---
+
+--- a/content/browser/devtools/protocol/emulation_handler.cc
++++ b/content/browser/devtools/protocol/emulation_handler.cc
+@@ -39,6 +39,8 @@
+ #include "services/device/public/mojom/pressure_update.mojom.h"
+ #include "services/device/public/mojom/sensor.mojom-shared.h"
+ #include "services/network/public/cpp/client_hints.h"
++#include "third_party/blink/public/common/fingerprint/cdp_ua_override.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/mojom/device_posture/device_posture_provider.mojom.h"
+ #include "third_party/blink/public/mojom/page/widget.mojom-shared.h"
+ #include "ui/display/mojom/screen_orientation.mojom.h"
+@@ -167,6 +169,15 @@
+     UpdateTouchEventEmulationState();
+   }
+   user_agent_ = std::string();
++  // Stealth Chromium: drop the WebContents-level user-agent override
++  // installed by SetUserAgentOverride() (0041).
++  if (stealth_ua_override_active_) {
++    stealth_ua_override_active_ = false;
++    if (host_) {
++      GetWebContents()->SetUserAgentOverride(blink::UserAgentOverride(),
++                                             /*override_in_new_tabs=*/false);
++    }
++  }
+   if (device_emulation_enabled_) {
+     device_emulation_enabled_ = false;
+     UpdateDeviceEmulationState();
+@@ -865,6 +876,40 @@
+   accept_language_ = accept_lang;
+ 
+   user_agent_metadata_ = std::nullopt;
++
++  // Stealth Chromium: CDP user-agent override coherence (0041). A bare
++  // override string (what Puppeteer sends on every page session) normally
++  // blanks navigator.userAgentData in the top local root while same-process
++  // iframes and OOPIFs keep reporting the persona/stock identity. Derive a
++  // full persona-coherent metadata from the override string and route the
++  // whole override through the WebContents renderer preferences, which reach
++  // every frame of the page. The command is then handled here (no
++  // fall-through) so the renderer-side emulation agent does not blank the
++  // metadata again. Explicit acceptLanguage/platform/metadata parameters
++  // keep the stock renderer-side path.
++  WebContentsImpl* stealth_contents =
++      blink::fingerprint::Enabled() && host_ ? GetWebContents() : nullptr;
++  const bool stealth_route =
++      stealth_contents && !platform.has_value() && !accept_language.has_value();
++  if (stealth_route && !ua_metadata_override) {
++    if (user_agent.empty()) {
++      if (stealth_ua_override_active_) {
++        stealth_contents->SetUserAgentOverride(blink::UserAgentOverride(),
++                                               /*override_in_new_tabs=*/false);
++        stealth_ua_override_active_ = false;
++      }
++      return Response::FallThrough();
++    }
++    user_agent_metadata_ =
++        blink::fingerprint::DeriveUserAgentMetadataFromOverride(
++            user_agent, GetContentClient()->browser()->GetUserAgentMetadata());
++    stealth_contents->SetUserAgentOverride(
++        blink::UserAgentOverride{user_agent, user_agent_metadata_},
++        /*override_in_new_tabs=*/true);
++    stealth_ua_override_active_ = true;
++    return Response::Success();
++  }
++
+   if (!ua_metadata_override) {
+     return Response::FallThrough();
+   }
+@@ -876,8 +921,16 @@
+ 
+   Emulation::UserAgentMetadata& ua_metadata = *ua_metadata_override;
+   blink::UserAgentMetadata new_ua_metadata;
++  // Stealth Chromium: with fingerprinting on, fields the client omitted fall
++  // back to the derivation from the override string (persona-filled) instead
++  // of the raw persona, so a partial metadata cannot disagree with the
++  // override string.
+   blink::UserAgentMetadata default_ua_metadata =
+-      GetContentClient()->browser()->GetUserAgentMetadata();
++      stealth_route
++          ? blink::fingerprint::DeriveUserAgentMetadataFromOverride(
++                user_agent,
++                GetContentClient()->browser()->GetUserAgentMetadata())
++          : GetContentClient()->browser()->GetUserAgentMetadata();
+ 
+   if (ua_metadata.HasBrands()) {
+     for (const auto& bv : *ua_metadata.GetBrands(nullptr)) {
+@@ -970,6 +1023,30 @@
+ 
+   // All checks OK, can update user_agent_metadata_.
+   user_agent_metadata_.emplace(std::move(new_ua_metadata));
++  if (stealth_route) {
++    // Stealth Chromium: propagate the client metadata to every frame through
++    // the WebContents renderer preferences (see comment above), filling
++    // platform fields the client left empty from the override-string
++    // derivation so they cannot blank navigator.userAgentData.
++    if (user_agent_metadata_->platform.empty()) {
++      user_agent_metadata_->platform = default_ua_metadata.platform;
++    }
++    if (user_agent_metadata_->platform_version.empty()) {
++      user_agent_metadata_->platform_version =
++          default_ua_metadata.platform_version;
++    }
++    if (user_agent_metadata_->architecture.empty()) {
++      user_agent_metadata_->architecture = default_ua_metadata.architecture;
++    }
++    if (user_agent_metadata_->model.empty()) {
++      user_agent_metadata_->model = default_ua_metadata.model;
++    }
++    stealth_contents->SetUserAgentOverride(
++        blink::UserAgentOverride{user_agent, user_agent_metadata_},
++        /*override_in_new_tabs=*/true);
++    stealth_ua_override_active_ = true;
++    return Response::Success();
++  }
+   return Response::FallThrough();
+ }
+ 
+--- a/content/browser/devtools/protocol/emulation_handler.h
++++ b/content/browser/devtools/protocol/emulation_handler.h
+@@ -189,6 +189,9 @@
+   // In that case nullopt will disable sending of client hints, and a
+   // non-nullopt value will be sent.
+   std::optional<blink::UserAgentMetadata> user_agent_metadata_;
++  // Stealth Chromium: true while this handler routed a CDP user-agent
++  // override through the WebContents renderer preferences (0041).
++  bool stealth_ua_override_active_ = false;
+   std::string accept_language_;
+   // If |prefers_color_scheme_| is either "light" or "dark", it is used to
+   // override the "prefers-color-scheme" client hint header, when present.
+--- a/content/renderer/render_frame_impl.cc
++++ b/content/renderer/render_frame_impl.cc
+@@ -152,6 +152,7 @@
+ #include "third_party/blink/public/common/context_menu_data/context_menu_data.h"
+ #include "third_party/blink/public/common/context_menu_data/untrustworthy_context_menu_params.h"
+ #include "third_party/blink/public/common/features.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/common/input/web_keyboard_event.h"
+ #include "third_party/blink/public/common/interest_group/ad_auction_constants.h"
+ #include "third_party/blink/public/common/loader/loader_constants.h"
+@@ -4799,6 +4800,15 @@
+ 
+ bool RenderFrameImpl::ShouldUseUserAgentOverride() const {
+   auto* web_view = GetWebView();
++  // Stealth Chromium: apply a renderer-preferences user-agent override in
++  // every frame while fingerprinting is on, so the CDP override routed
++  // through WebContents (0041) reads identically in same-process iframes
++  // and OOPIFs regardless of per-navigation override flags.
++  if (blink::fingerprint::Enabled() &&
++      !web_view->GetRendererPreferences()
++           .user_agent_override.ua_string_override.empty()) {
++    return true;
++  }
+   // TODO(nasko): When the top-level frame is remote, there is no
+   // WebDocumentLoader associated with it, so the checks below are not valid.
+   // Temporarily return early and fix properly as part of
+--- /dev/null
++++ b/third_party/blink/public/common/fingerprint/cdp_ua_override.h
+@@ -0,0 +1,308 @@
++// Copyright 2026 The Stealth Chromium Authors
++// Use of this source code is governed by a GPLv3 license that can be
++// found in the LICENSE file of the Stealth Chromium distribution.
++
++#ifndef THIRD_PARTY_BLINK_PUBLIC_COMMON_FINGERPRINT_CDP_UA_OVERRIDE_H_
++#define THIRD_PARTY_BLINK_PUBLIC_COMMON_FINGERPRINT_CDP_UA_OVERRIDE_H_
++
++#include <array>
++#include <cstring>
++#include <string>
++#include <vector>
++
++#include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
++
++// Stealth Chromium (0041): coherent identity across frames under CDP
++// user-agent overrides. `Emulation.setUserAgentOverride` normally carries
++// only a UA string (e.g. Puppeteer); stock Chromium leaves the client-hints
++// metadata blank or persona/stock depending on the frame. This derivation
++// turns the override string into a full UserAgentMetadata so every frame of
++// the page reports one identity.
++//
++// The override string wins for everything it implies (brand, full version,
++// OS, mobile, model); `persona` — the 0010 persona metadata — fills what it
++// cannot imply (bitness, wow64, form factors, and the tuned platform detail
++// fields when the string's OS matches the persona platform). The brand lists
++// are rebuilt with the GREASE algorithm seeded by the override's major
++// version, matching what stock Chromium of that version would send. Pure and
++// deterministic: the same string and persona give the same metadata on every
++// launch, on every platform.
++
++namespace blink::fingerprint {
++
++namespace cdp_ua_internal {
++
++inline std::string VersionTokenAfter(const std::string& ua, size_t start) {
++  std::string version;
++  for (size_t i = start; i < ua.size(); ++i) {
++    if ((ua[i] >= '0' && ua[i] <= '9') || ua[i] == '.') {
++      version += ua[i];
++    } else {
++      break;
++    }
++  }
++  while (!version.empty() && version.back() == '.') {
++    version.pop_back();
++  }
++  bool has_digit = false;
++  for (char c : version) {
++    if (c >= '0' && c <= '9') {
++      has_digit = true;
++      break;
++    }
++  }
++  return has_digit ? version : std::string();
++}
++
++inline std::string MajorOf(const std::string& version) {
++  const size_t dot = version.find('.');
++  return dot == std::string::npos ? version : version.substr(0, dot);
++}
++
++inline int MajorSeed(const std::string& major) {
++  int seed = 0;
++  for (char c : major) {
++    if (c < '0' || c > '9') {
++      continue;
++    }
++    seed = seed * 10 + (c - '0');
++    if (seed > 1000000) {
++      break;  // Any realistic major version stays far below this clamp.
++    }
++  }
++  return seed;
++}
++
++// Mirrors GetGreasedUserAgentBrandVersion()/GetProcessedGreasedBrandVersion()
++// from components/embedder_support/user_agent_utils.cc, seeded by the
++// override's major version instead of the build's.
++inline UserAgentBrandVersion GreasedBrandVersion(int seed, bool full_version) {
++  static constexpr const char* kChars[] = {" ", "(", ":", "-", ".", "/",
++                                           ")", ";", "=", "?", "_"};
++  static constexpr const char* kVersions[] = {"8", "99", "24"};
++  const std::string version = kVersions[seed % 3];
++  return {std::string("Not") + kChars[seed % 11] + "A" +
++              kChars[(seed + 1) % 11] + "Brand",
++          full_version ? version + ".0.0.0" : version};
++}
++
++// Mirrors ShuffleBrandList()/GetRandomOrder() for the fixed 3-entry list
++// used here (major-version-seeded stable permutation).
++inline UserAgentBrandList ShuffleBrandList3(UserAgentBrandList list,
++                                            int seed) {
++  static constexpr std::array<std::array<size_t, 3>, 6> kOrders{
++      {{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}}};
++  const auto& order = kOrders[seed % 6];
++  UserAgentBrandList shuffled(list.size());
++  for (size_t i = 0; i < order.size(); ++i) {
++    shuffled[order[i]] = std::move(list[i]);
++  }
++  return shuffled;
++}
++
++// Platform version implied by an Android token ("Android 13" -> "13.0.0").
++inline std::string AndroidPlatformVersion(const std::string& ua) {
++  const size_t token = ua.find("Android ");
++  if (token == std::string::npos) {
++    return std::string();
++  }
++  const std::string version = VersionTokenAfter(ua, token + 8);
++  if (version.empty()) {
++    return std::string();
++  }
++  return MajorOf(version) + ".0.0";
++}
++
++// Device model: the parenthetical segment after the Android version token,
++// up to " Build/", the next ';' or the closing ')'. Empty when not spelled
++// out.
++inline std::string AndroidModel(const std::string& ua) {
++  const size_t token = ua.find("Android ");
++  if (token == std::string::npos) {
++    return std::string();
++  }
++  size_t start = ua.find(';', token);
++  if (start == std::string::npos) {
++    return std::string();
++  }
++  ++start;
++  while (start < ua.size() && ua[start] == ' ') {
++    ++start;
++  }
++  size_t end = ua.find(" Build/", start);
++  const size_t semi = ua.find(';', start);
++  const size_t paren = ua.find(')', start);
++  if (semi != std::string::npos && (end == std::string::npos || semi < end)) {
++    end = semi;
++  }
++  if (paren != std::string::npos && (end == std::string::npos || paren < end)) {
++    end = paren;
++  }
++  if (end == std::string::npos || end <= start) {
++    return std::string();
++  }
++  return ua.substr(start, end - start);
++}
++
++// Platform version implied by an iOS token ("OS 17_2" -> "17.2.0").
++inline std::string IosPlatformVersion(const std::string& ua) {
++  const size_t token = ua.find("OS ");
++  if (token == std::string::npos) {
++    return std::string();
++  }
++  std::string version;
++  for (size_t i = token + 3; i < ua.size(); ++i) {
++    if ((ua[i] >= '0' && ua[i] <= '9') || ua[i] == '_') {
++      version += ua[i] == '_' ? '.' : ua[i];
++    } else {
++      break;
++    }
++  }
++  if (version.empty()) {
++    return std::string();
++  }
++  // "17_2" arrived as "17.2"; pad to major.minor.patch.
++  size_t dots = 0;
++  for (char c : version) {
++    if (c == '.') {
++      ++dots;
++    }
++  }
++  if (dots == 0) {
++    return version + ".0.0";
++  }
++  if (dots == 1) {
++    return version + ".0";
++  }
++  return version;
++}
++
++}  // namespace cdp_ua_internal
++
++inline UserAgentMetadata DeriveUserAgentMetadataFromOverride(
++    const std::string& user_agent,
++    const UserAgentMetadata& persona) {
++  using namespace cdp_ua_internal;
++
++  UserAgentMetadata metadata = persona;
++
++  // Brand and full version: the last recognized browser token in the string
++  // wins (Edge/Opera/etc. append their token after the Chrome one).
++  struct BrandToken {
++    const char* token;
++    const char* brand;
++  };
++  static constexpr BrandToken kBrandTokens[] = {
++      {"EdgiOS/", "Microsoft Edge"},   {"EdgA/", "Microsoft Edge"},
++      {"Edg/", "Microsoft Edge"},      {"OPR/", "Opera"},
++      {"OPX/", "Opera"},               {"Vivaldi/", "Vivaldi"},
++      {"SamsungBrowser/", "Samsung Internet"}, {"CriOS/", "Google Chrome"},
++      {"Chrome/", "Google Chrome"},    {"Chromium/", "Chromium"},
++  };
++  std::string brand;
++  std::string full_version;
++  size_t best = 0;
++  for (const auto& entry : kBrandTokens) {
++    const size_t pos = user_agent.rfind(entry.token);
++    if (pos == std::string::npos || pos < best) {
++      continue;
++    }
++    const std::string version =
++        VersionTokenAfter(user_agent, pos + std::strlen(entry.token));
++    if (version.empty()) {
++      continue;
++    }
++    best = pos;
++    brand = entry.brand;
++    full_version = version;
++  }
++
++  if (!full_version.empty()) {
++    const std::string major = MajorOf(full_version);
++    const int seed = MajorSeed(major);
++    metadata.full_version = full_version;
++    metadata.brand_full_version_list =
++        ShuffleBrandList3({GreasedBrandVersion(seed, /*full_version=*/true),
++                           {brand, full_version},
++                           {"Chromium", full_version}},
++                          seed);
++    metadata.brand_version_list =
++        ShuffleBrandList3({GreasedBrandVersion(seed, /*full_version=*/false),
++                           {brand, major},
++                           {"Chromium", major}},
++                          seed);
++  }
++
++  // OS-CPU parenthetical. The classic UA freezes or omits most platform
++  // detail, so unmatched fields fall back to the persona; when the string's
++  // OS differs from the persona platform, defaults mirror the 0010 persona
++  // table for that OS.
++  std::string platform;
++  std::string platform_version;
++  std::string architecture;
++  std::string model;
++  bool mobile = false;
++  if (user_agent.find("Windows") != std::string::npos) {
++    platform = "Windows";
++    platform_version = "19.0.0";
++    architecture = "x86";
++  } else if (user_agent.find("Android") != std::string::npos) {
++    platform = "Android";
++    platform_version = AndroidPlatformVersion(user_agent);
++    if (platform_version.empty()) {
++      platform_version = "13.0.0";
++    }
++    architecture = "arm";
++    model = AndroidModel(user_agent);
++    mobile = true;
++  } else if (user_agent.find("iPhone") != std::string::npos ||
++             user_agent.find("iPad") != std::string::npos) {
++    platform = "iOS";
++    platform_version = IosPlatformVersion(user_agent);
++    if (platform_version.empty()) {
++      platform_version = "16.6.0";
++    }
++    architecture = "arm";
++    mobile = true;
++  } else if (user_agent.find("CrOS ") != std::string::npos) {
++    platform = "ChromeOS";
++    const size_t token = user_agent.find("CrOS ");
++    platform_version = VersionTokenAfter(user_agent, token + 5);
++    if (platform_version.empty()) {
++      platform_version = "14541.0.0";
++    }
++    architecture = "x86";
++  } else if (user_agent.find("Macintosh") != std::string::npos ||
++             user_agent.find("Mac OS X") != std::string::npos) {
++    platform = "macOS";
++    platform_version = "15.2.0";  // UA token is frozen at 10_15_7.
++    architecture = "arm";
++  } else if (user_agent.find("X11;") != std::string::npos ||
++             user_agent.find("Linux x86_64") != std::string::npos ||
++             user_agent.find("(X11;") != std::string::npos ||
++             user_agent.find("Linux;") != std::string::npos) {
++    platform = "Linux";
++    platform_version = "6.11.0";
++    architecture = "x86";
++  }
++
++  if (!platform.empty()) {
++    metadata.platform = platform;
++    if (platform != persona.platform) {
++      // The override implies a different OS than the persona: rewrite the
++      // fields the persona had tuned for its own platform.
++      metadata.platform_version = platform_version;
++      metadata.architecture = architecture;
++      metadata.mobile = mobile;
++      if (!model.empty()) {
++        metadata.model = model;
++      }
++    }
++  }
++
++  return metadata;
++}
++
++}  // namespace blink::fingerprint
++
++#endif  // THIRD_PARTY_BLINK_PUBLIC_COMMON_FINGERPRINT_CDP_UA_OVERRIDE_H_

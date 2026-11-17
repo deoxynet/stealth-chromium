@@ -1,0 +1,475 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stealth Chromium contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 0039] fingerprint: jointly-sampled hardware device profiles
+X-Spec: Pro-build joint hardware personas (CHANGELOG 0.4.8, 148.0.7778.215.5); docs/features/joint-hardware-personas.md
+X-Files: third_party/blink/renderer/core/fingerprint/device_profiles.h third_party/blink/renderer/core/fingerprint/screen_dimensions.h third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc third_party/blink/renderer/core/frame/navigator_device_memory.cc third_party/blink/renderer/modules/webgl/gpu_fingerprint.cc third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h
+
+---
+
+--- /dev/null
++++ b/third_party/blink/renderer/core/fingerprint/device_profiles.h
+@@ -0,0 +1,151 @@
++// Copyright 2026 The Stealth Chromium Authors
++// Use of this source code is governed by a GPLv3 license that can be
++// found in the LICENSE file of the Stealth Chromium distribution.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_DEVICE_PROFILES_H_
++#define THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_DEVICE_PROFILES_H_
++
++#include <cstdint>
++#include <iterator>
++#include <string_view>
++
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
++
++// Stealth Chromium: jointly-sampled hardware device profiles.
++//
++// The vendor build derives every hardware value of an identity from "the
++// most common real-world hardware values ... chosen together so they form
++// a popular, self-consistent device with no internal contradictions"
++// (CHANGELOG 0.4.8). One deterministic selection per (seed, platform)
++// picks a complete profile below, and the persona-default branches of
++// deviceMemory (0004), hardwareConcurrency (0005), the screen dimensions
++// (0007) and the WebGL / WebGPU GPU personas (0016/0032) all read that one
++// entry, replacing the former independent per-field hash defaults which
++// could combine into machines nobody ships.
++//
++// GPU selection reuses the existing persona databases: nvidia_device_id
++// is a PCI id from kNvidiaGpuModels (modules/webgl/gpu_fingerprint.cc and
++// modules/webgpu/webgpu_fingerprint.h share one table; ids are unique),
++// apple_soc is a 0016-style SoC name. No GPU strings live here.
++//
++// Precedence at every consumer: explicit --fingerprint-* override >
++// profile > stock. With fingerprinting disabled ActiveDeviceProfile()
++// returns nullptr and no profile code executes.
++namespace blink::fingerprint {
++
++struct DeviceProfile {
++  int screen_width;  // CSS pixels; what window.screen reports under the persona
++  int screen_height;
++  int color_depth;           // 24 for every entry, matching stock Chrome
++  float device_memory_gb;    // navigator.deviceMemory
++  int hardware_concurrency;  // navigator.hardwareConcurrency (logical cores)
++  uint32_t nvidia_device_id;  // kNvidiaGpuModels entry; 0 on the macOS persona
++  const char* apple_soc;      // macOS persona SoC name; "" everywhere else
++};
++
++// Popular Windows pairings; desktops first, then laptops (1536x864 is a
++// 1920x1080 panel at Windows' 125% scaling, 1366x768 the budget panel).
++inline constexpr DeviceProfile kWindowsDeviceProfiles[] = {
++    {1920, 1080, 24, 8.0f, 8, 0x2507, ""},    // RTX 3050 desktop
++    {1920, 1080, 24, 8.0f, 12, 0x2582, ""},   // RTX 3050 desktop
++    {1920, 1080, 24, 16.0f, 12, 0x2487, ""},  // RTX 3060 desktop
++    {2560, 1440, 24, 16.0f, 12, 0x2486, ""},  // RTX 3060 Ti desktop
++    {2560, 1440, 24, 16.0f, 16, 0x2484, ""},  // RTX 3070 desktop
++    {2560, 1440, 24, 32.0f, 16, 0x2786, ""},  // RTX 4070 desktop
++    {2560, 1440, 24, 16.0f, 16, 0x2C05, ""},  // RTX 5070 Ti desktop
++    {3840, 2160, 24, 32.0f, 16, 0x2704, ""},  // RTX 4080 desktop
++    {3840, 2160, 24, 32.0f, 16, 0x2684, ""},  // RTX 4090 desktop
++    {1920, 1080, 24, 16.0f, 16, 0x2882, ""},  // RTX 4060 desktop
++    {1536, 864, 24, 8.0f, 8, 0x25A2, ""},     // RTX 3050 Laptop GPU
++    {1536, 864, 24, 8.0f, 12, 0x25A0, ""},    // RTX 3050 Ti Laptop GPU
++    {1366, 768, 24, 8.0f, 8, 0x25EC, ""},     // RTX 3050 6GB Laptop GPU
++    {1920, 1080, 24, 8.0f, 12, 0x2520, ""},   // RTX 3060 Laptop GPU
++    {1920, 1080, 24, 16.0f, 12, 0x28E1, ""},  // RTX 4050 Laptop GPU
++    {1920, 1080, 24, 16.0f, 16, 0x28A0, ""},  // RTX 4060 Laptop GPU
++    {2560, 1440, 24, 32.0f, 16, 0x2820, ""},  // RTX 4070 Laptop GPU
++    {1920, 1080, 24, 32.0f, 16, 0x249C, ""},  // RTX 3080 Laptop GPU
++};
++
++// Apple-silicon Macs at their default scaled resolution (window.screen
++// reports the "looks like" size, not the panel size); desktops with
++// common external displays last.
++inline constexpr DeviceProfile kMacOsDeviceProfiles[] = {
++    {1440, 900, 24, 8.0f, 8, 0, "M1"},         // MacBook Air 13" M1
++    {1440, 900, 24, 16.0f, 8, 0, "M1"},        // MacBook Air 13" M1, 16 GB
++    {1470, 956, 24, 8.0f, 8, 0, "M2"},         // MacBook Air 13" M2
++    {1470, 956, 24, 8.0f, 8, 0, "M3"},         // MacBook Air 15" M3
++    {1470, 956, 24, 16.0f, 8, 0, "M3"},        // MacBook Air 13" M3, 16 GB
++    {1512, 982, 24, 16.0f, 10, 0, "M1 Pro"},   // MacBook Pro 14" M1 Pro
++    {1512, 982, 24, 16.0f, 10, 0, "M2 Pro"},   // MacBook Pro 14" M2 Pro
++    {1512, 982, 24, 16.0f, 10, 0, "M4"},       // MacBook Pro 14" M4
++    {1512, 982, 24, 16.0f, 12, 0, "M2 Pro"},   // MacBook Pro 14" M2 Pro
++    {1728, 1117, 24, 16.0f, 12, 0, "M3 Pro"},  // MacBook Pro 16" M3 Pro
++    {1728, 1117, 24, 32.0f, 12, 0, "M2 Max"},  // MacBook Pro 16" M2 Max
++    {1728, 1117, 24, 32.0f, 16, 0, "M3 Max"},  // MacBook Pro 16" M3 Max
++    {1728, 1117, 24, 32.0f, 16, 0, "M4 Max"},  // MacBook Pro 16" M4 Max
++    {1920, 1080, 24, 8.0f, 8, 0, "M1"},        // Mac mini M1
++    {1920, 1080, 24, 8.0f, 8, 0, "M2"},        // Mac mini M2
++    {2560, 1440, 24, 16.0f, 10, 0, "M4"},      // Mac mini M4
++    {3840, 2160, 24, 32.0f, 12, 0, "M2 Max"},  // Mac Studio M2 Max
++};
++
++// Linux desktops and Linux-native laptops. The pool is NVIDIA-only: the
++// 0016/0032 Linux vendor and renderer strings are NVIDIA-shaped, and
++// reusing them verbatim is what keeps WebGL, WebGPU and this table
++// coherent.
++inline constexpr DeviceProfile kLinuxDeviceProfiles[] = {
++    {1920, 1080, 24, 8.0f, 8, 0x2507, ""},    // RTX 3050 desktop
++    {1920, 1080, 24, 16.0f, 8, 0x2582, ""},   // RTX 3050 desktop
++    {1920, 1080, 24, 16.0f, 12, 0x2487, ""},  // RTX 3060 desktop
++    {2560, 1440, 24, 16.0f, 12, 0x2486, ""},  // RTX 3060 Ti desktop
++    {2560, 1440, 24, 32.0f, 16, 0x2484, ""},  // RTX 3070 desktop
++    {2560, 1440, 24, 32.0f, 16, 0x2786, ""},  // RTX 4070 desktop
++    {1920, 1080, 24, 32.0f, 16, 0x2882, ""},  // RTX 4060 desktop
++    {3840, 2160, 24, 32.0f, 16, 0x2684, ""},  // RTX 4090 desktop
++    {1920, 1080, 24, 8.0f, 12, 0x2520, ""},   // RTX 3060 Laptop GPU
++    {1920, 1080, 24, 16.0f, 12, 0x28E1, ""},  // RTX 4050 Laptop GPU
++    {1920, 1080, 24, 16.0f, 16, 0x28A0, ""},  // RTX 4060 Laptop GPU
++    {2560, 1440, 24, 16.0f, 16, 0x249C, ""},  // RTX 3080 Laptop GPU
++    {1536, 864, 24, 8.0f, 8, 0x25A2, ""},     // RTX 3050 Laptop GPU
++    {1920, 1080, 24, 8.0f, 8, 0x25EC, ""},    // RTX 3050 6GB Laptop GPU
++};
++
++// The active joint persona, or nullptr when no identity seed is set (the
++// callers' stock fallthrough). Cached like the accessors in
++// fingerprint.h: the command line is immutable by the time renderer code
++// runs. An absent or unrecognized --fingerprint-platform resolves to the
++// Linux tables, matching the GPU persona default in 0016/0032.
++inline const DeviceProfile* ActiveDeviceProfile() {
++  static const DeviceProfile* profile = [] -> const DeviceProfile* {
++    if (!Seed()) {
++      return nullptr;
++    }
++    const DeviceProfile* table = kLinuxDeviceProfiles;
++    size_t count = std::size(kLinuxDeviceProfiles);
++    std::string_view key = "linux";
++    switch (SpoofedPlatform()) {
++      case Platform::kWindows:
++        table = kWindowsDeviceProfiles;
++        count = std::size(kWindowsDeviceProfiles);
++        key = "windows";
++        break;
++      case Platform::kMacOs:
++        table = kMacOsDeviceProfiles;
++        count = std::size(kMacOsDeviceProfiles);
++        key = "macos";
++        break;
++      case Platform::kNone:
++      case Platform::kLinux:
++        break;
++    }
++    // Same seed + same platform ⇒ same profile, always; the platform key
++    // keeps the per-table indices independent.
++    const uint64_t hash = Mix(HashFor("device-profile") ^ Hash(key));
++    return &table[hash % count];
++  }();
++  return profile;
++}
++
++}  // namespace blink::fingerprint
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_DEVICE_PROFILES_H_
+--- a/third_party/blink/renderer/core/fingerprint/screen_dimensions.h
++++ b/third_party/blink/renderer/core/fingerprint/screen_dimensions.h
+@@ -8,14 +8,16 @@
+ #include <optional>
+ 
+ #include "third_party/blink/public/common/fingerprint/fingerprint.h"
++#include "third_party/blink/renderer/core/fingerprint/device_profiles.h"
+ 
+ // Screen-dimension ladder shared by window.screen (core/frame/screen.cc) and
+ // CSS media queries (core/css/media_values.cc) so JS and CSS agree.
+ //
+ // Resolution order per dimension (mirrors the vendor build):
+ //   1. --fingerprint-screen-width / --fingerprint-screen-height
+-//   2. platform default when both --fingerprint and --fingerprint-platform
+-//      are present: macos 1440x900, anything else 1920x1080
++//   2. joint device profile (device_profiles.h) when both --fingerprint and
++//      --fingerprint-platform are present; the same profile also drives RAM,
++//      CPU cores, and the GPU persona
+ //   3. nullopt → caller falls back to stock behavior
+ namespace blink::fingerprint {
+ 
+@@ -30,7 +32,9 @@
+     return static_cast<int>(*w);
+   }
+   if (HasPlatformDefault()) {
+-    return SpoofedPlatform() == Platform::kMacOs ? 1440 : 1920;
++    if (const DeviceProfile* profile = ActiveDeviceProfile()) {
++      return profile->screen_width;
++    }
+   }
+   return std::nullopt;
+ }
+@@ -40,7 +44,9 @@
+     return static_cast<int>(*h);
+   }
+   if (HasPlatformDefault()) {
+-    return SpoofedPlatform() == Platform::kMacOs ? 900 : 1080;
++    if (const DeviceProfile* profile = ActiveDeviceProfile()) {
++      return profile->screen_height;
++    }
+   }
+   return std::nullopt;
+ }
+--- a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
++++ b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+@@ -6,12 +6,14 @@
+ 
+ #include "base/system/sys_info.h"
+ #include "third_party/blink/public/common/fingerprint/fingerprint.h"
++#include "third_party/blink/renderer/core/fingerprint/device_profiles.h"
+ 
+ namespace blink {
+ 
+ unsigned NavigatorConcurrentHardware::hardwareConcurrency() const {
+-  // Stealth Chromium: explicit thread-count override; 8-thread persona default
+-  // when only the identity seed is present.
++  // Stealth Chromium: explicit thread-count override; the core count comes
++  // from the joint device profile so it matches the persona's GPU, RAM, and
++  // screen.
+   if (auto count =
+           fingerprint::SwitchUint(switches::kFingerprintHardwareConcurrency)) {
+     if (*count != 0) {
+@@ -19,6 +21,10 @@
+     }
+   }
+   if (fingerprint::Seed()) {
++    if (const fingerprint::DeviceProfile* profile =
++            fingerprint::ActiveDeviceProfile()) {
++      return static_cast<unsigned>(profile->hardware_concurrency);
++    }
+     return 8u;
+   }
+   return static_cast<unsigned>(base::SysInfo::NumberOfProcessors());
+--- a/third_party/blink/renderer/core/frame/navigator_device_memory.cc
++++ b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
+@@ -10,19 +10,25 @@
+ #include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
+ #include "third_party/blink/renderer/core/dom/document.h"
++#include "third_party/blink/renderer/core/fingerprint/device_profiles.h"
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+ 
+ namespace blink {
+ 
+ float NavigatorDeviceMemory::deviceMemory() const {
+   // Stealth Chromium: unbucketed override (launcher passes a realistic bucketed
+-  // value); 8 GiB persona default when only the identity seed is present.
++  // value); RAM comes from the joint device profile so it matches the
++  // persona's GPU, cores, and screen.
+   if (auto gb = fingerprint::SwitchDouble(switches::kFingerprintDeviceMemory)) {
+     if (*gb > 0.0 && !std::isnan(*gb)) {
+       return static_cast<float>(*gb);
+     }
+   }
+   if (fingerprint::Seed()) {
++    if (const fingerprint::DeviceProfile* profile =
++            fingerprint::ActiveDeviceProfile()) {
++      return profile->device_memory_gb;
++    }
+     return 8.0f;
+   }
+   return ApproximatedDeviceMemory::GetApproximatedDeviceMemory();
+--- a/third_party/blink/renderer/modules/webgl/gpu_fingerprint.cc
++++ b/third_party/blink/renderer/modules/webgl/gpu_fingerprint.cc
+@@ -5,12 +5,15 @@
+ #include "third_party/blink/renderer/modules/webgl/gpu_fingerprint.h"
+ 
+ #include <cstdint>
++#include <string_view>
+ #include <vector>
+ 
+ #include "base/command_line.h"
++#include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
+ #include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/common/switches.h"
++#include "third_party/blink/renderer/core/fingerprint/device_profiles.h"
+ 
+ namespace blink {
+ 
+@@ -83,13 +86,24 @@
+     {"GeForce RTX 5090 Laptop GPU", "0x00002C58"},
+ };
+ 
+-constexpr size_t kNvidiaGpuModelCount = std::size(kNvidiaGpuModels);
++// Stealth Chromium: joint-profile lookup (0039). PCI ids are unique across
++// the table, so a device profile's id resolves exactly one model — the
++// same entry modules/webgpu/webgpu_fingerprint.h resolves by value.
++uint32_t ModelDeviceId(const GpuModel& model) {
++  uint32_t device_id = 0;
++  base::HexStringToUInt(std::string_view(model.device_id).substr(2),
++                        &device_id);
++  return device_id;
++}
+ 
+-// Apple SoCs for the macOS persona.
+-constexpr const char* kAppleGpuModels[] = {
+-    "M1", "M1 Pro", "M2", "M2 Max", "M2 Pro",
+-    "M3", "M3 Max", "M3 Pro", "M4", "M4 Max", "M4 Pro",
+-};
++const GpuModel* FindNvidiaModel(uint32_t device_id) {
++  for (const GpuModel& model : kNvidiaGpuModels) {
++    if (ModelDeviceId(model) == device_id) {
++      return &model;
++    }
++  }
++  return nullptr;
++}
+ 
+ constexpr char kWindowsVendorString[] = "NVIDIA";
+ constexpr char kLinuxVendorString[] = "NVIDIA Corporation";
+@@ -99,9 +113,13 @@
+ 
+ bool IsFingerprintGpuActive() {
+   const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
+-  return cmd.HasSwitch(switches::kFingerprintGpuRenderer) ||
+-         cmd.HasSwitch(switches::kFingerprintGpuVendor) ||
+-         cmd.HasSwitch(switches::kFingerprint);
++  // Stealth Chromium: an explicit --fingerprint off-value disables the GPU
++  // persona (explicit GPU switches included) along with the rest of the
++  // system; the switch's mere presence is not enough.
++  return fingerprint::Enabled() &&
++         (cmd.HasSwitch(switches::kFingerprintGpuRenderer) ||
++          cmd.HasSwitch(switches::kFingerprintGpuVendor) ||
++          cmd.HasSwitch(switches::kFingerprint));
+ }
+ 
+ std::string ResolveFingerprintGpuPlatform() {
+@@ -110,7 +128,11 @@
+     const std::string value =
+         cmd.GetSwitchValueASCII(switches::kFingerprintPlatform);
+     if (base::IsStringASCII(value)) {
+-      return base::ToLowerASCII(value);
++      const std::string platform = base::ToLowerASCII(value);
++      // Stealth Chromium: "darwin" is a macOS alias in SpoofedPlatform();
++      // resolve it here too so the joint profile's Apple SoC never meets an
++      // NVIDIA vendor string.
++      return platform == "darwin" ? "macos" : platform;
+     }
+   }
+   return "linux";
+@@ -123,7 +145,7 @@
+         cmd.GetSwitchValueASCII(switches::kFingerprintGpuVendor);
+     return base::IsStringASCII(value) ? value : std::string();
+   }
+-  if (!cmd.HasSwitch(switches::kFingerprint)) {
++  if (!fingerprint::Enabled() || !cmd.HasSwitch(switches::kFingerprint)) {
+     return std::string();
+   }
+   const std::string platform = ResolveFingerprintGpuPlatform();
+@@ -146,9 +168,9 @@
+       value.clear();
+     }
+     have_renderer = true;
+-  } else if (cmd.HasSwitch(switches::kFingerprint)) {
+-    value = fingerprint::SeedString();
+-  } else {
++  } else if (!fingerprint::Enabled() ||
++             !cmd.HasSwitch(switches::kFingerprint)) {
++    // Stealth Chromium: --fingerprint=off disables the persona entirely.
+     return std::string();
+   }
+ 
+@@ -174,22 +196,28 @@
+     return value;
+   }
+ 
+-  // Seed path: deterministic index into the model database.
+-  const uint32_t hash =
+-      static_cast<uint32_t>(fingerprint::HashFor("gpu_renderer"));
++  // Seed path: the joint device profile (0039) picks the model, so the GPU
++  // always matches the persona's screen, RAM, and core count.
++  const fingerprint::DeviceProfile* profile =
++      fingerprint::ActiveDeviceProfile();
++  if (!profile) {
++    return std::string();
++  }
+   if (platform == "macos") {
+     return "ANGLE (Apple, ANGLE Metal Renderer: Apple " +
+-           std::string(kAppleGpuModels[hash % std::size(kAppleGpuModels)]) +
+-           ", Unspecified Version)";
++           std::string(profile->apple_soc) + ", Unspecified Version)";
+   }
+-  const GpuModel& model = kNvidiaGpuModels[hash % kNvidiaGpuModelCount];
++  const GpuModel* model = FindNvidiaModel(profile->nvidia_device_id);
++  if (!model) {
++    return std::string();
++  }
+   if (platform == "linux") {
+     return "ANGLE (" + std::string(kLinuxVendorString) + ", NVIDIA " +
+-           model.name + kLinuxGpuSuffix + ")";
++           model->name + kLinuxGpuSuffix + ")";
+   }
+   // Windows persona: full ANGLE D3D11 renderer string.
+   return "ANGLE (" + std::string(kWindowsVendorString) + ", NVIDIA " +
+-         model.name + " (" + model.device_id +
++         model->name + " (" + model->device_id +
+          ") Direct3D11 vs_5_0 ps_5_0, D3D11)";
+ }
+ 
+--- a/third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h
++++ b/third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h
+@@ -17,10 +17,11 @@
+ // the vendor build).
+ //
+ // The NVIDIA model selection mirrors modules/webgl/gpu_fingerprint.cc
+-// (patch 0016): same database order, same seed salt ("gpu_renderer"), same
+-// first-match substring lookup for --fingerprint-gpu-renderer. The two
+-// tables MUST stay in sync so WebGL UNMASKED_RENDERER_WEBGL and the WebGPU
+-// adapter info can never disagree for a given identity.
++// (patch 0016): same database, and — since patch 0039 — the same joint
++// device profile (core/fingerprint/device_profiles.h) picks the entry for
++// both personas, so WebGL UNMASKED_RENDERER_WEBGL and the WebGPU adapter
++// info can never disagree for a given identity. --fingerprint-gpu-renderer
++// keeps its first-match substring lookup.
+ 
+ #include <algorithm>
+ #include <cstdint>
+@@ -31,6 +32,7 @@
+ #include "base/strings/string_util.h"
+ #include "third_party/blink/public/common/fingerprint/fingerprint.h"
+ #include "third_party/blink/public/common/switches.h"
++#include "third_party/blink/renderer/core/fingerprint/device_profiles.h"
+ #include "third_party/blink/renderer/modules/webgpu/gpu_supported_limits.h"
+ #include "third_party/blink/renderer/platform/graphics/gpu/webgpu_cpp.h"
+ 
+@@ -119,7 +121,11 @@
+     const std::string value =
+         cmd.GetSwitchValueASCII(switches::kFingerprintPlatform);
+     if (base::IsStringASCII(value)) {
+-      return base::ToLowerASCII(value);
++      const std::string platform = base::ToLowerASCII(value);
++      // Stealth Chromium: "darwin" is a macOS alias in SpoofedPlatform();
++      // resolve it here too so the joint profile's Apple SoC never meets an
++      // NVIDIA persona.
++      return platform == "darwin" ? "macos" : platform;
+     }
+   }
+   return "linux";
+@@ -127,8 +133,9 @@
+ 
+ // Index into kNvidiaGpuModels: an explicit --fingerprint-gpu-renderer whose
+ // value contains a model name selects that model (first match wins, same
+-// iteration order as the WebGL persona); otherwise the identity seed hashes
+-// to a stable index. nullopt = no persona model (custom renderer string).
++// iteration order as the WebGL persona); otherwise the joint device profile
++// (0039) selects the model by its unique PCI id. nullopt = no persona model
++// (custom renderer string or macOS persona).
+ inline std::optional<size_t> ResolveNvidiaModelIndex() {
+   const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
+   if (cmd.HasSwitch(switches::kFingerprintGpuRenderer)) {
+@@ -144,9 +151,17 @@
+     }
+     return std::nullopt;
+   }
+-  const uint32_t hash =
+-      static_cast<uint32_t>(fingerprint::HashFor("gpu_renderer"));
+-  return hash % kNvidiaGpuModelCount;
++  const fingerprint::DeviceProfile* profile =
++      fingerprint::ActiveDeviceProfile();
++  if (!profile || profile->nvidia_device_id == 0) {
++    return std::nullopt;
++  }
++  for (size_t i = 0; i < kNvidiaGpuModelCount; ++i) {
++    if (kNvidiaGpuModels[i].device_id == profile->nvidia_device_id) {
++      return i;
++    }
++  }
++  return std::nullopt;
+ }
+ 
+ // Persona vendor: "" = no spoof (fingerprinting off), else "apple" on the

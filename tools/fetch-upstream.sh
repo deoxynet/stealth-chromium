@@ -25,14 +25,26 @@ mkdir -p "${MIRROR}"
 
 # Collect every path modified (not added) by the series. Paths whose diff
 # header pair is `--- /dev/null` / `+++ b/...` are files the series creates;
-# they have no upstream counterpart and are skipped.
+# they have no upstream counterpart and are skipped — including when a later
+# patch modifies them again (a `--- a/...` hunk against a series-created
+# file must not be fetched from upstream).
 paths="$(awk '
   /^--- /  { devnull = ($2 == "/dev/null"); next }
   /^\+\+\+ / {
-    if (!devnull && $2 != "/dev/null") {
-      path = $2; sub(/^b\//, "", path); sub(/\t.*/, "", path); print path
+    path = $2; sub(/^b\//, "", path); sub(/\t.*/, "", path)
+    if (devnull) {
+      created[path] = 1
+    } else if ($2 != "/dev/null") {
+      modified[path] = 1
     }
     devnull = 0; next
+  }
+  END {
+    for (path in modified) {
+      if (!(path in created)) {
+        print path
+      }
+    }
   }
 ' "${SERIES_DIR}"/*.patch 2>/dev/null | sort -u || true)"
 

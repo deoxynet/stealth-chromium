@@ -18,11 +18,16 @@ See [docs/BUILDING.md](docs/BUILDING.md) to actually compile the browser
 (Dockerfile + end-to-end build script + post-build fingerprint smoke
 test).
 
-**Status: all 38 patches implemented and machine-verified against
-Chromium `146.0.7680.177`** (verify.sh: 38/38; patch 0038 additionally touches
+**Status: all 42 patches implemented and machine-verified against
+Chromium `146.0.7680.177`** (verify.sh: 42/42; patch 0038 additionally touches
 V8 sources, resolved via the DEPS-pinned v8 revision) (every surface in the spec catalog; remaining
 approximations are listed in
 [docs/patch-status.md](docs/patch-status.md) "Open items").
+
+Patches 0039–0042 port the four serious CloakBrowser **Pro-build features**
+(joint hardware personas, reported-version tracking, CDP user-agent-override
+coherence, host-font isolation) — design notes in
+[docs/features/](docs/features/).
 
 
 ## Using the series
@@ -52,6 +57,7 @@ identity per launch). Control it with switches:
 | `--fingerprint-fonts-dir=<dir>` | Extra fonts counted as available for the font persona |
 | `--fingerprint-storage-quota=<MiB>` | navigator.storage quota (else seed-derived 400–600 MiB) |
 | `--fingerprint-brand`, `--fingerprint-brand-version`, `--fingerprint-platform-version` | UA-CH persona details |
+| `--fingerprint-report-version=<major.minor.build.patch>` | Reported Chrome version for UA/UA-CH/chrome://version/`--version`; default = current stable constant, updated at rebase time |
 
 All switches are propagated to renderer processes automatically (patch
 0003).

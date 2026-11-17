@@ -1,0 +1,237 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stealth Chromium contributors
+Date: Thu, 1 Jan 2026 00:00:00 +0000
+Subject: [PATCH 40/40] fingerprint: reported Chrome version decoupled from build base
+X-Spec: Pro-build version tracking (CHANGELOG 0.4.12/0.5.2); docs/features/reported-version-override.md
+X-Files: base/version_info/version_info.h base/version_info/version_info.cc components/version_info/version_info_with_user_agent.h components/version_info/version_info_with_user_agent.cc components/embedder_support/user_agent_utils.cc content/browser/renderer_host/render_process_host_impl.cc third_party/blink/common/switches.cc third_party/blink/public/common/switches.h third_party/blink/public/common/fingerprint/reported_version.h
+
+---
+
+--- a/base/version_info/version_info.h
++++ b/base/version_info/version_info.h
+@@ -26,9 +26,11 @@
+ }
+ 
+ // Returns the version number, e.g. "6.0.490.1".
+-constexpr std::string_view GetVersionNumber() {
+-  return PRODUCT_VERSION;
+-}
++// Stealth Chromium: not constexpr — the reported Chrome version is decoupled
++// from the build base (series/0040). Resolves --fingerprint-report-version,
++// else a rebase-time Chrome-stable default, whenever fingerprinting is on;
++// returns PRODUCT_VERSION (stock) whenever fingerprinting is off.
++std::string_view GetVersionNumber();
+ 
+ // Returns the major component (aka the milestone) of the version as an int,
+ // e.g. 6 when the version is "6.0.490.1".
+--- a/base/version_info/version_info.cc
++++ b/base/version_info/version_info.cc
+@@ -6,13 +6,61 @@
+ 
+ #include <string>
+ 
++#include "base/command_line.h"
+ #include "base/no_destructor.h"
+ #include "base/strings/strcat.h"
+ #include "base/strings/string_number_conversions.h"
++#include "base/strings/string_util.h"
+ #include "base/version.h"
+ 
+ namespace version_info {
+ 
++namespace {
++
++// Stealth Chromium: reported-version override (series/0040). base/ must not
++// depend on blink, so the switch names defined in
++// third_party/blink/public/common/switches.h are spelled out here; keep them
++// in sync.
++constexpr char kFingerprintSwitch[] = "fingerprint";
++constexpr char kFingerprintReportVersionSwitch[] = "fingerprint-report-version";
++
++// Default reported version: current Chrome stable at the last series rebase.
++// TODO(stealth): bump at each rebase (see docs/REBASING.md).
++constexpr char kDefaultReportedChromeVersion[] = "157.0.8103.78";
++
++bool FingerprintingEnabled() {
++  const base::CommandLine& command_line =
++      *base::CommandLine::ForCurrentProcess();
++  if (!command_line.HasSwitch(kFingerprintSwitch)) {
++    return false;
++  }
++  const std::string value = base::ToLowerASCII(
++      command_line.GetSwitchValueASCII(kFingerprintSwitch));
++  return value != "off" && value != "false" && value != "0" &&
++         value != "disable" && value != "disabled";
++}
++
++std::string ReportedVersionNumber() {
++  if (!FingerprintingEnabled()) {
++    return PRODUCT_VERSION;
++  }
++  const std::string override_value =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          kFingerprintReportVersionSwitch);
++  // Loose validation: any dotted numeric form base::Version accepts.
++  if (base::Version(override_value).IsValid()) {
++    return override_value;
++  }
++  return kDefaultReportedChromeVersion;
++}
++
++}  // namespace
++
++std::string_view GetVersionNumber() {
++  static const std::string reported = ReportedVersionNumber();
++  return reported;
++}
++
+ int GetMajorVersionNumberAsInt() {
+   DCHECK(GetVersion().IsValid());
+   return GetVersion().components()[0];
+--- a/components/version_info/version_info_with_user_agent.h
++++ b/components/version_info/version_info_with_user_agent.h
+@@ -18,9 +18,10 @@
+ 
+ // Returns the product name and version information for the User-Agent header,
+ // in the format: Chrome/<major_version>.<minor_version>.<build>.<patch>.
+-constexpr std::string_view GetProductNameAndVersionForUserAgent() {
+-  return "Chrome/" PRODUCT_VERSION;
+-}
++// Stealth Chromium: not constexpr — the token follows the reported Chrome
++// version (series/0040); equals "Chrome/" PRODUCT_VERSION whenever
++// fingerprinting is off. Implementation in version_info_with_user_agent.cc.
++std::string_view GetProductNameAndVersionForUserAgent();
+ 
+ }  // namespace version_info
+ 
+--- a/components/version_info/version_info_with_user_agent.cc
++++ b/components/version_info/version_info_with_user_agent.cc
+@@ -13,4 +13,13 @@
+   return base::StrCat({"Chrome/", GetMajorVersionNumber(), ".0.0.0"});
+ }
+ 
++// Stealth Chromium: reported-version UA token (series/0040); the underlying
++// GetVersionNumber() returns PRODUCT_VERSION when fingerprinting is off, so
++// the token is byte-identical to the stock compile-time form then.
++std::string_view GetProductNameAndVersionForUserAgent() {
++  static const std::string product =
++      base::StrCat("Chrome/", GetVersionNumber());
++  return product;
++}
++
+ }  // namespace version_info
+--- a/components/embedder_support/user_agent_utils.cc
++++ b/components/embedder_support/user_agent_utils.cc
+@@ -33,6 +33,7 @@
+ #include "components/version_info/version_info.h"
+ #include "net/http/http_util.h"
+ #include "third_party/blink/public/common/features.h"
++#include "third_party/blink/public/common/fingerprint/reported_version.h"
+ #include "third_party/blink/public/common/switches.h"
+ #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
+ 
+@@ -316,8 +317,14 @@
+   // token after the Chrome token, like the real browsers do.
+   if (std::string os_token = GetFingerprintOsToken(); !os_token.empty()) {
+     std::string user_agent = BuildUserAgentFromOSAndProduct(os_token, product);
+-    FingerprintBrandPersona persona =
+-        GetFingerprintBrandPersona(std::string(version_info::GetVersionNumber()));
++    // Stealth Chromium: persona version fields come from the one reported
++    // Chrome version (series/0040); stock build version when it abstains.
++    const std::string reported_version =
++        blink::fingerprint::ReportedChromeVersion();
++    FingerprintBrandPersona persona = GetFingerprintBrandPersona(
++        reported_version.empty()
++            ? std::string(version_info::GetVersionNumber())
++            : reported_version);
+     if (!persona.ua_suffix.empty()) {
+       user_agent.append(persona.ua_suffix).append(persona.version);
+     }
+@@ -776,7 +783,16 @@
+   // seeded by the Chromium major version (matches stock Chrome formatting).
+   // full_version/model/mobile/bitness/wow64 keep their stock values.
+   {
+-    const std::string chromium_full(version_info::GetVersionNumber());
++    // Stealth Chromium: every persona version field derives from the one
++    // reported Chrome version (series/0040); stock build version when it
++    // abstains. The GREASE seed follows the same major via
++    // version_info::GetMajorVersionNumber().
++    const std::string reported_version =
++        blink::fingerprint::ReportedChromeVersion();
++    const std::string chromium_full =
++        reported_version.empty()
++            ? std::string(version_info::GetVersionNumber())
++            : reported_version;
+     const int seed = version_info::GetMajorVersionNumber();
+     FingerprintBrandPersona persona = GetFingerprintBrandPersona(chromium_full);
+ 
+--- a/content/browser/renderer_host/render_process_host_impl.cc
++++ b/content/browser/renderer_host/render_process_host_impl.cc
+@@ -3723,6 +3723,7 @@
+       blink::switches::kFingerprintNoise,
+       blink::switches::kFingerprintPlatform,
+       blink::switches::kFingerprintPlatformVersion,
++      blink::switches::kFingerprintReportVersion,
+       blink::switches::kFingerprintScreenHeight,
+       blink::switches::kFingerprintScreenWidth,
+       blink::switches::kFingerprintStorageQuota,
+--- a/third_party/blink/common/switches.cc
++++ b/third_party/blink/common/switches.cc
+@@ -184,6 +184,7 @@
+ const char kFingerprintNoise[] = "fingerprint-noise";
+ const char kFingerprintPlatform[] = "fingerprint-platform";
+ const char kFingerprintPlatformVersion[] = "fingerprint-platform-version";
++const char kFingerprintReportVersion[] = "fingerprint-report-version";
+ const char kFingerprintScreenHeight[] = "fingerprint-screen-height";
+ const char kFingerprintScreenWidth[] = "fingerprint-screen-width";
+ const char kFingerprintStorageQuota[] = "fingerprint-storage-quota";
+--- a/third_party/blink/public/common/switches.h
++++ b/third_party/blink/public/common/switches.h
+@@ -77,6 +77,7 @@
+ BLINK_COMMON_EXPORT extern const char kFingerprintNoise[];
+ BLINK_COMMON_EXPORT extern const char kFingerprintPlatform[];
+ BLINK_COMMON_EXPORT extern const char kFingerprintPlatformVersion[];
++BLINK_COMMON_EXPORT extern const char kFingerprintReportVersion[];
+ BLINK_COMMON_EXPORT extern const char kFingerprintScreenHeight[];
+ BLINK_COMMON_EXPORT extern const char kFingerprintScreenWidth[];
+ BLINK_COMMON_EXPORT extern const char kFingerprintStorageQuota[];
+--- /dev/null
++++ b/third_party/blink/public/common/fingerprint/reported_version.h
+@@ -0,0 +1,37 @@
++// Copyright 2026 The Stealth Chromium Authors
++// Use of this source code is governed by a GPLv3 license that can be
++// found in the LICENSE file of the Stealth Chromium distribution.
++
++#ifndef THIRD_PARTY_BLINK_PUBLIC_COMMON_FINGERPRINT_REPORTED_VERSION_H_
++#define THIRD_PARTY_BLINK_PUBLIC_COMMON_FINGERPRINT_REPORTED_VERSION_H_
++
++#include <string>
++
++#include "base/version_info/version_info.h"
++#include "third_party/blink/public/common/fingerprint/fingerprint.h"
++
++// Reported Chrome version, decoupled from the build base (series/0040).
++//
++// A browser frozen on an old Chromium base that reports a year-stale version
++// is a cheap bot signal, so the reported version tracks real Chrome instead
++// of the build base. The single source is version_info::GetVersionNumber(),
++// patched to resolve, in order: --fingerprint-report-version (loosely
++// validated dotted-numeric), else a compile-time default equal to Chrome
++// stable at the last series rebase, else the stock build version.
++//
++// Returns "" when fingerprinting is off so call sites fall back to their
++// stock values byte-for-byte.
++namespace blink::fingerprint {
++
++inline std::string ReportedChromeVersion() {
++  if (!Enabled()) {
++    return std::string();
++  }
++  // base/ cannot depend on blink, so the switch parsing and the default
++  // constant live in base/version_info/version_info.cc.
++  return std::string(version_info::GetVersionNumber());
++}
++
++}  // namespace blink::fingerprint
++
++#endif  // THIRD_PARTY_BLINK_PUBLIC_COMMON_FINGERPRINT_REPORTED_VERSION_H_

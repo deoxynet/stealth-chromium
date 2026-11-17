@@ -70,6 +70,18 @@ tools/verify.sh <new-tag>  # confirm the new base is green
 - CI schedule/matrix in `.github/workflows/verify.yml` if you track
   specific versions
 
+## Reported version constant (patch 0040)
+
+The reported Chrome version decouples what the browser claims to be from
+the base it is built on. When the base moves, the claimed version must
+move too, independently of upstream: bump
+`kDefaultReportedChromeVersion` in `base/version_info/version_info.cc` to
+the current Chrome stable (check the [Chrome Releases
+blog](https://chromereleases.googleblog.com/)). That one constant feeds
+the UA string, UA-CH brands, `chrome://version`, and `--version` — nothing
+else to update. See
+[features/reported-version-override.md](features/reported-version-override.md).
+
 ## House rules that keep rebases cheap
 
 - Logic lives in **new files**; keep existing-file edits to the minimum

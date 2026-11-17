@@ -105,3 +105,32 @@ Documented per patch in `X-Spec`/commit bodies; the major ones:
   string level.
 - `--fingerprint=off` (ours) vs the vendor's wrapper-side switch stripping:
   same observable effect, simpler plumbing.
+
+## Pro-build feature patches (0039–0042)
+
+Four patches reconstructed from the vendor's *Pro* CHANGELOG prose (no
+binary ground truth — the free v146 build predates them). Design notes and
+divergences: [docs/features/](features/).
+
+- **0039 joint hardware personas** — device-profile tables per platform
+  (18 Windows / 17 macOS / 14 Linux complete profiles). The seed + platform
+  selects one profile; the persona-default branches of deviceMemory,
+  hardwareConcurrency, screen, GPU model, and WebGPU adapter read from it,
+  so hardware values are jointly sampled instead of independent per-field
+  hashes. Explicit switches still win; no new switch.
+- **0040 reported-version override** — one source of truth at
+  `base/version_info` `GetVersionNumber()` (de-constexpr-ized): explicit
+  `--fingerprint-report-version` > rebase-time stable constant >
+  (fingerprint off) real build version. Feeds the UA token, UA-CH
+  brands/fullVersionList, `chrome://version`, and `--version`. Bump the
+  constant at each rebase (see REBASING.md).
+- **0041 CDP UA-override coherence** — a bare
+  `Emulation.setUserAgentOverride` derives a full UserAgentMetadata
+  (`cdp_ua_override.h` parser), which is pushed through the WebContents
+  override so every frame (OOPIFs included) agrees with the top frame;
+  the persona fills fields the override doesn't imply. Gated on
+  `fingerprint::Enabled()`; no new switch.
+- **0042 host-font isolation** — `FontCache::GetFontPlatformData` fails
+  closed to the persona inventory (persona lists + `--fingerprint-fonts-dir`
+  + generic families), closing the `document.fonts.check` /
+  measureText host-font oracle. Applies to same-platform personas too.

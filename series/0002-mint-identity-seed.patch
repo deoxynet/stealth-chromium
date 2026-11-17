@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 2/33] fingerprint: mint random identity seed at browser startup
 X-Spec: patches/01-identity-seed.md
@@ -30,7 +30,7 @@ X-Files: chrome/app/chrome_main_delegate.cc
    const base::CommandLine& command_line =
        *base::CommandLine::ForCurrentProcess();
  
-+  // fp-patches: mint the per-session identity seed. Every deterministic
++  // Stealth Chromium: mint the per-session identity seed. Every deterministic
 +  // spoof downstream derives from this single value; when the launcher does
 +  // not pin one (--fingerprint=<decimal u64>) a fresh random identity is
 +  // used for this session. Children inherit it via the renderer switch

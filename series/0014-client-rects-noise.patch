@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 14/33] fingerprint: get*ClientRects/offsetWidth/Height seeded noise
 X-Spec: patches/05-client-rects-noise.md
@@ -10,9 +10,9 @@ X-Files: third_party/blink/renderer/core/fingerprint/client_rects_noise.h third_
 --- /dev/null
 +++ b/third_party/blink/renderer/core/fingerprint/client_rects_noise.h
 @@ -0,0 +1,36 @@
-+// Copyright 2026 The fp-patches Authors
++// Copyright 2026 The Stealth Chromium Authors
 +// Use of this source code is governed by a GPLv3 license that can be
-+// found in the LICENSE file of the fp-patches distribution.
++// found in the LICENSE file of the Stealth Chromium distribution.
 +
 +#ifndef THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_CLIENT_RECTS_NOISE_H_
 +#define THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_CLIENT_RECTS_NOISE_H_
@@ -60,7 +60,7 @@ X-Files: third_party/blink/renderer/core/fingerprint/client_rects_noise.h third_
    Vector<gfx::QuadF> quads;
    GetBorderAndTextQuads(quads);
  
-+  // fp-patches: translate quads by the seeded sub-pixel offset (pure
++  // Stealth Chromium: translate quads by the seeded sub-pixel offset (pure
 +  // translation; sizes unchanged).
 +  if (fingerprint::NoiseEnabled()) {
 +    const float dx = static_cast<float>(fingerprint::ClientRectsNoiseX());
@@ -79,7 +79,7 @@ X-Files: third_party/blink/renderer/core/fingerprint/client_rects_noise.h third_
    SyncScrollAttemptHeuristic::DidAccessScrollOffset();
 -  return DOMRect::FromRectF(BoundingRect());
 +  gfx::RectF rect = BoundingRect();
-+  // fp-patches: seeded sub-pixel origin translation.
++  // Stealth Chromium: seeded sub-pixel origin translation.
 +  if (fingerprint::NoiseEnabled()) {
 +    rect.set_x(rect.x() + static_cast<float>(fingerprint::ClientRectsNoiseX()));
 +    rect.set_y(rect.y() + static_cast<float>(fingerprint::ClientRectsNoiseY()));
@@ -102,7 +102,7 @@ X-Files: third_party/blink/renderer/core/fingerprint/client_rects_noise.h third_
    if (quads.empty()) {
      return {};
    }
-+  // fp-patches: translate quads by the seeded sub-pixel offset.
++  // Stealth Chromium: translate quads by the seeded sub-pixel offset.
 +  if (fingerprint::NoiseEnabled()) {
 +    const float dx = static_cast<float>(fingerprint::ClientRectsNoiseX());
 +    const float dy = static_cast<float>(fingerprint::ClientRectsNoiseY());
@@ -117,7 +117,7 @@ X-Files: third_party/blink/renderer/core/fingerprint/client_rects_noise.h third_
    DCHECK(element_layout_object);
    GetDocument().AdjustRectForScrollAndAbsoluteZoom(result,
                                                     *element_layout_object);
-+  // fp-patches: seeded sub-pixel origin translation after scroll/zoom
++  // Stealth Chromium: seeded sub-pixel origin translation after scroll/zoom
 +  // adjustment.
 +  if (fingerprint::NoiseEnabled()) {
 +    result.set_x(result.x() + static_cast<float>(fingerprint::ClientRectsNoiseX()));
@@ -140,7 +140,7 @@ X-Files: third_party/blink/renderer/core/fingerprint/client_rects_noise.h third_
    if (const auto* layout_object = GetLayoutBoxModelObject()) {
      result = AdjustedOffsetForZoom(layout_object->OffsetWidth());
    }
-+  // fp-patches: deterministic integer noise for large-enough values;
++  // Stealth Chromium: deterministic integer noise for large-enough values;
 +  // offset in [-30, +50] px keyed to (seed, element id).
 +  if (result >= 51 && fingerprint::NoiseEnabled()) {
 +    const std::string hash_input = fingerprint::SeedString() + "|offsetWidth|" +
@@ -155,7 +155,7 @@ X-Files: third_party/blink/renderer/core/fingerprint/client_rects_noise.h third_
    if (const auto* layout_object = GetLayoutBoxModelObject()) {
      result = AdjustedOffsetForZoom(layout_object->OffsetHeight());
    }
-+  // fp-patches: see offsetWidthForBinding.
++  // Stealth Chromium: see offsetWidthForBinding.
 +  if (result >= 51 && fingerprint::NoiseEnabled()) {
 +    const std::string hash_input = fingerprint::SeedString() +
 +                                   "|offsetHeight|" +

@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 32] fingerprint: WebGPU adapter persona + canvas format consistency
 X-Spec: patches/16-webgpu-fingerprint.md, patches/37-webgpu-canvas-format-consistency.md
@@ -10,14 +10,14 @@ X-Files: third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h third_pa
 --- /dev/null
 +++ b/third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h
 @@ -0,0 +1,287 @@
-+// Copyright 2026 The fp-patches Authors
++// Copyright 2026 The Stealth Chromium Authors
 +// Use of this source code is governed by a GPLv3 license that can be
-+// found in the LICENSE file of the fp-patches distribution.
++// found in the LICENSE file of the Stealth Chromium distribution.
 +
 +#ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGPU_WEBGPU_FINGERPRINT_H_
 +#define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGPU_WEBGPU_FINGERPRINT_H_
 +
-+// fp-patches: WebGPU adapter persona (spec patches/16-webgpu-fingerprint.md).
++// Stealth Chromium: WebGPU adapter persona (spec patches/16-webgpu-fingerprint.md).
 +//
 +// Identity-seed-driven GPUAdapter spoofing. While fingerprinting is active
 +// the adapter reports the persona vendor/architecture/device (Apple on the
@@ -50,7 +50,7 @@ X-Files: third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h third_pa
 +
 +namespace webgpu_fingerprint {
 +
-+// fp-patches: NVIDIA models with real PCI device IDs. Order mirrors
++// Stealth Chromium: NVIDIA models with real PCI device IDs. Order mirrors
 +// kNvidiaGpuModels in modules/webgl/gpu_fingerprint.cc (ungoogled-chromium
 +// table lineage); the index is shared with the WebGL persona, do not
 +// reorder. (name, PCI device id)
@@ -184,7 +184,7 @@ X-Files: third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h third_pa
 +  if (!index) {
 +    return std::string();
 +  }
-+  // fp-patches: vendor-observed bucket table, indexed by (id - 0x2000) >> 8.
++  // Stealth Chromium: vendor-observed bucket table, indexed by (id - 0x2000) >> 8.
 +  static constexpr const char* kArchitectureByBucket[16] = {
 +      "ampere",    "lovelace",   // 0x20xx, 0x21xx
 +      "ampere",    "lovelace",   // 0x22xx, 0x23xx
@@ -242,7 +242,7 @@ X-Files: third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h third_pa
 +  return false;
 +}
 +
-+// fp-patches: persona limits (vendor-observed stores/clamps; the exact
++// Stealth Chromium: persona limits (vendor-observed stores/clamps; the exact
 +// value table from the disassembly, applied by field name). Overwrites set
 +// the persona value; std::min entries clamp the real value down. Only
 +// applied while fingerprinting is active, so real limits stay stock.
@@ -311,7 +311,7 @@ X-Files: third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h third_pa
    const auto features_span = UNSAFE_BUFFERS(base::span<const wgpu::FeatureName>(
        supported_features.features, supported_features.featureCount));
    for (const auto& f : features_span) {
-+    // fp-patches: keep only features the persona could plausibly report
++    // Stealth Chromium: keep only features the persona could plausibly report
 +    // (allowlist; runs unconditionally, vendor-observed) that are also
 +    // representable in the JS enum.
 +    if (!webgpu_fingerprint::IsPlausibleFeature(f)) {
@@ -324,7 +324,7 @@ X-Files: third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h third_pa
            V8GPUFeatureName(feature_name_enum_optional.value()));
 +    }
 +  }
-+  // fp-patches: the NVIDIA persona always advertises shader-f16 and
++  // Stealth Chromium: the NVIDIA persona always advertises shader-f16 and
 +  // dual-source-blending, even when the underlying adapter did not report
 +  // them (vendor-observed force-add; AddFeatureName is idempotent).
 +  if (webgpu_fingerprint::GetVendor() == "nvidia") {
@@ -348,7 +348,7 @@ X-Files: third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h third_pa
    } else {
      device_ = String::Format("0x%08x", info.deviceID);
 +  }
-+  // fp-patches: WebGPU adapter persona. While fingerprinting is active,
++  // Stealth Chromium: WebGPU adapter persona. While fingerprinting is active,
 +  // vendor/architecture/device agree with the WebGL persona (same identity
 +  // seed resolves the same NVIDIA model). The macOS persona reports the
 +  // Apple vendor and the "common-3" family architecture and keeps the real
@@ -376,7 +376,7 @@ X-Files: third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h third_pa
  
    GPUSupportedLimits::ComboLimits limits;
    GetHandle().GetLimits(limits.GetLinked());
-+  // fp-patches: clamp the advertised limits to the persona table, gated on
++  // Stealth Chromium: clamp the advertised limits to the persona table, gated on
 +  // the persona being active so real limits are never lowered while
 +  // fingerprinting is off.
 +  if (!fingerprint_vendor.empty()) {
@@ -399,7 +399,7 @@ X-Files: third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h third_pa
      case wgpu::RequestAdapterStatus::Unavailable:
      case wgpu::RequestAdapterStatus::Error:
      case wgpu::RequestAdapterStatus::CallbackCancelled:
-+      // fp-patches: WebGPU blocklist bypass. While fingerprinting, still
++      // Stealth Chromium: WebGPU blocklist bypass. While fingerprinting, still
 +      // construct the adapter (its info is fully replaced by the persona
 +      // hooks in GPUAdapter's constructor) when dawn returned a usable
 +      // handle despite an Unavailable/Error status, so requestAdapter()
@@ -419,7 +419,7 @@ X-Files: third_party/blink/renderer/modules/webgpu/webgpu_fingerprint.h third_pa
  }
  
  wgpu::TextureFormat GPU::GetPreferredCanvasFormat() {
-+  // fp-patches: canvas-format consistency. While fingerprinting, every
++  // Stealth Chromium: canvas-format consistency. While fingerprinting, every
 +  // persona prefers "bgra8unorm" (the macOS/D3D answer) regardless of host
 +  // OS — not keyed on --fingerprint-platform. This is the single source for
 +  // getPreferredCanvasFormat(), GPUCanvasContext::configure()'s swap-chain

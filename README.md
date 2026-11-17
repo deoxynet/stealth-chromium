@@ -1,8 +1,9 @@
-# anti-fingerprint-chromium-patches — an open-source Chromium anti-fingerprinting patch series
+# Stealth Chromium — an open-source Chromium anti-fingerprinting patch series
 
-fp-patches is a maintainable, per-surface patch series for Chromium that
-spoofs or noises the browser-fingerprint surfaces commonly read by tracking
-and bot-detection scripts: canvas, text metrics, client rects, audio,
+Stealth Chromium patches the browser itself to control its fingerprint.
+Its maintainable, per-surface patch series spoofs or noises the browser-fingerprint
+surfaces commonly read by tracking and bot-detection scripts: canvas, text
+metrics, client rects, audio,
 screen dimensions, hardware reporting, user agent + UA-CH, timezone,
 locale/Accept-Language, WebGL/GPU, storage quota, and more.
 
@@ -31,7 +32,7 @@ approximations are listed in
 tools/apply.sh /path/to/chromium/src
 
 # or with git-am semantics (one commit per patch):
-git -C /path/to/chromium/src am ~/fp-patches/series/*.patch
+git -C /path/to/chromium/src am ~/stealth-chromium/series/*.patch
 ```
 
 Then build Chromium normally. Fingerprinting is on by default (random

@@ -16,7 +16,7 @@ set -euo pipefail
 
 OUT="${1:?}"; NUM="${2:?}"; SUBJECT="${3:?}"; SPEC="${4:?}"; shift 4
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MIRROR="${FP_PATCH_BASE:-${ROOT}/.upstream-mirror}"
+MIRROR="${STEALTH_CHROMIUM_PATCH_BASE:-${ROOT}/.upstream-mirror}"
 WORK="${ROOT}/.work"
 
 body="$(mktemp)"
@@ -41,7 +41,7 @@ fi
 
 {
   echo "From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001"
-  echo "From: fp-patches contributors"
+  echo "From: Stealth Chromium contributors"
   echo "Date: Thu, 1 Jan 2026 00:00:00 +0000"
   echo "Subject: [PATCH ${NUM}] ${SUBJECT}"
   echo "X-Spec: ${SPEC}"

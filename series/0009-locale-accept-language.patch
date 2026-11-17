@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 9/33] fingerprint: locale override (Accept-Language, navigator.languages, renderer ICU)
 X-Spec: patches/20-locale-accept-language.md
@@ -21,7 +21,7 @@ X-Files: chrome/browser/net/profile_network_context_service.cc chrome/browser/re
    // expanding the language list if the DisableReduceAcceptLanguage deprecation
    // trial ends.
  
-+  // fp-patches: persona Accept-Language. Reuses the stock expansion/header
++  // Stealth Chromium: persona Accept-Language. Reuses the stock expansion/header
 +  // helpers so q-values match a stock browser with that language pref.
 +  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
 +          blink::switches::kFingerprintLocale)) {
@@ -58,7 +58,7 @@ X-Files: chrome/browser/net/profile_network_context_service.cc chrome/browser/re
        pref_service->GetList(prefs::kWebRtcLocalIpsAllowedUrls));
    prefs->accept_languages = GetLanguageListForProfile(
        profile, pref_service->GetString(language::prefs::kAcceptLanguages));
-+  // fp-patches: persona accept-languages override what the profile prefs
++  // Stealth Chromium: persona accept-languages override what the profile prefs
 +  // produced; renderers see this for navigator.language(s) fallback paths.
 +  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
 +          blink::switches::kFingerprintLocale)) {
@@ -94,7 +94,7 @@ X-Files: chrome/browser/net/profile_network_context_service.cc chrome/browser/re
  
    const base::CommandLine& command_line = *parameters.command_line;
  
-+  // fp-patches: renderer ICU default locale follows the persona locale so
++  // Stealth Chromium: renderer ICU default locale follows the persona locale so
 +  // Intl defaults agree with navigator.languages and Accept-Language. A
 +  // comma list uses its first tag (ICU takes a single locale).
 +  if (command_line.HasSwitch(blink::switches::kFingerprintLocale)) {
@@ -118,7 +118,7 @@ X-Files: chrome/browser/net/profile_network_context_service.cc chrome/browser/re
  }
  
  void NavigatorLanguage::EnsureUpdatedLanguage() {
-+  // fp-patches: persona locale wins over browser-provided accept languages.
++  // Stealth Chromium: persona locale wins over browser-provided accept languages.
 +  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
 +          blink::switches::kFingerprintLocale)) {
 +    const std::string locale =

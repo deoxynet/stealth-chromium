@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 36] net: SOCKS5 UDP ASSOCIATE + warm pool for QUIC/HTTP3 over SOCKS5
 X-Spec: patches/38-socks5-udp-associate-warm-pool.md
@@ -10,11 +10,11 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
 --- /dev/null
 +++ b/net/socket/socks5_datagram_client_socket.h
 @@ -0,0 +1,249 @@
-+// Copyright 2026 The fp-patches Authors
++// Copyright 2026 The Stealth Chromium Authors
 +// Use of this source code is governed by a GPL-3.0 license that can be
-+// found in the LICENSE file of the source tree (fp-patches).
++// found in the LICENSE file of the source tree (Stealth Chromium).
 +
-+// fp-patches (spec: patches/38-socks5-udp-associate-warm-pool.md):
++// Stealth Chromium (spec: patches/38-socks5-udp-associate-warm-pool.md):
 +// SOCKS5 UDP ASSOCIATE datagram client socket. Runs the RFC 1928
 +// greeting (plus RFC 1929 username/password auth when the warm pool
 +// carries credentials) and the UDP ASSOCIATE command over a TCP control
@@ -262,11 +262,11 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
 --- /dev/null
 +++ b/net/socket/socks5_datagram_client_socket.cc
 @@ -0,0 +1,930 @@
-+// Copyright 2026 The fp-patches Authors
++// Copyright 2026 The Stealth Chromium Authors
 +// Use of this source code is governed by a GPL-3.0 license that can be
-+// found in the LICENSE file of the source tree (fp-patches).
++// found in the LICENSE file of the source tree (Stealth Chromium).
 +
-+// fp-patches (spec: patches/38-socks5-udp-associate-warm-pool.md):
++// Stealth Chromium (spec: patches/38-socks5-udp-associate-warm-pool.md):
 +// SOCKS5 UDP ASSOCIATE implementation. The TCP control-channel state
 +// machine (greet / RFC 1929 auth / associate) mirrors the stock
 +// SOCKS5ClientSocket handshake loop; the UDP data path frames each
@@ -303,7 +303,7 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
 +
 +namespace {
 +
-+// fp-patches: traffic annotation for the SOCKS5 UDP relay path
++// Stealth Chromium: traffic annotation for the SOCKS5 UDP relay path
 +// (symbol-observed in the vendor binary as (anonymous
 +// ns)::kSocks5UdpTrafficAnnotation).
 +constexpr NetworkTrafficAnnotationTag kSocks5UdpTrafficAnnotation =
@@ -663,7 +663,7 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
 +    return ERR_MSG_TOO_BIG;
 +  }
 +
-+  // fp-patches: frame the datagram for the associate target and relay
++  // Stealth Chromium: frame the datagram for the associate target and relay
 +  // it (netlog type SOCKS5_UDP_SEND_TO_TARGET).
 +  outgoing_write_buf_ =
 +      base::MakeRefCounted<IOBufferWithSize>(buf_len + kMaxUdpHeaderSize);
@@ -849,7 +849,7 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
 +int SOCKS5DatagramClientSocket::DoTcpConnect() {
 +  next_state_ = STATE_TCP_CONNECT_COMPLETE;
 +
-+  // fp-patches: prefer a warm socket from Socks5WarmPool — its
++  // Stealth Chromium: prefer a warm socket from Socks5WarmPool — its
 +  // greeting/auth have already completed, so jump straight to the
 +  // associate request.
 +  transport_socket_ = Socks5WarmPool::GetInstance()->TakeWarmSocket();
@@ -1195,11 +1195,11 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
 --- /dev/null
 +++ b/net/socket/socks5_warm_pool.h
 @@ -0,0 +1,165 @@
-+// Copyright 2026 The fp-patches Authors
++// Copyright 2026 The Stealth Chromium Authors
 +// Use of this source code is governed by a GPL-3.0 license that can be
-+// found in the LICENSE file of the source tree (fp-patches).
++// found in the LICENSE file of the source tree (Stealth Chromium).
 +
-+// fp-patches (spec: patches/38-socks5-udp-associate-warm-pool.md):
++// Stealth Chromium (spec: patches/38-socks5-udp-associate-warm-pool.md):
 +// SOCKS5 warm connection pool. Keeps a small set of TCP sockets to the
 +// SOCKS5 proxy that have already completed the RFC 1928 method
 +// negotiation (and RFC 1929 username/password auth when the proxy is
@@ -1363,11 +1363,11 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
 --- /dev/null
 +++ b/net/socket/socks5_warm_pool.cc
 @@ -0,0 +1,674 @@
-+// Copyright 2026 The fp-patches Authors
++// Copyright 2026 The Stealth Chromium Authors
 +// Use of this source code is governed by a GPL-3.0 license that can be
-+// found in the LICENSE file of the source tree (fp-patches).
++// found in the LICENSE file of the source tree (Stealth Chromium).
 +
-+// fp-patches (spec: patches/38-socks5-udp-associate-warm-pool.md):
++// Stealth Chromium (spec: patches/38-socks5-udp-associate-warm-pool.md):
 +// SOCKS5 warm pool implementation. Each warm entry runs its own
 +// connect/greet(/auth) state machine on a raw TCP socket created by the
 +// ClientSocketFactory; completed entries wait in |warm_| until
@@ -2043,7 +2043,7 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
  
    // Creates a datagram socket. |source| is the NetLogSource for the entity
    // trying to create the socket, if it has one.
-+  // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md):
++  // Stealth Chromium (spec patches/38-socks5-udp-associate-warm-pool.md):
 +  // takes the session key so a single-hop SOCKS5 proxy chain can be
 +  // routed onto a SOCKS5 UDP-ASSOCIATE datagram socket.
    std::unique_ptr<DatagramClientSocket> CreateSocket(
@@ -2067,7 +2067,7 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
    std::optional<base::TimeTicks> proxy_connect_start_time = std::nullopt;
 -  if (session_key.proxy_chain().is_direct()) {
 -    if (session_key.session_usage() == SessionUsage::kProxy) {
-+  // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md): a
++  // Stealth Chromium (spec patches/38-socks5-udp-associate-warm-pool.md): a
 +  // single-hop SOCKS5 chain runs the direct flow — the destination is
 +  // resolved here and CreateSocket() hands the attempt a SOCKS5
 +  // UDP-ASSOCIATE socket that relays through the proxy. ProxyJob (QUIC
@@ -2088,7 +2088,7 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
 +    const QuicSessionKey& session_key,
      NetLog* net_log,
      const NetLogSource& source) {
-+  // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md):
++  // Stealth Chromium (spec patches/38-socks5-udp-associate-warm-pool.md):
 +  // QUIC/HTTP-3 over a single-hop SOCKS5 proxy rides on a SOCKS5
 +  // UDP-ASSOCIATE datagram socket (TCP control channel for
 +  // greet/auth/associate, SOCKS5-UDP-framed datagrams to the relay)
@@ -2113,7 +2113,7 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
    // endpoint.
    std::unique_ptr<DatagramClientSocket> socket(
 -      CreateSocket(net_log.net_log(), net_log.source()));
-+      // fp-patches: see CreateSocket (SOCKS5 UDP-ASSOCIATE routing).
++      // Stealth Chromium: see CreateSocket (SOCKS5 UDP-ASSOCIATE routing).
 +      CreateSocket(key.session_key(), net_log.net_log(), net_log.source()));
  
    // If migrate_sessions_on_network_change_v2 is on, passing in
@@ -2123,7 +2123,7 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
    // endpoint.
    std::unique_ptr<DatagramClientSocket> socket(
 -      CreateSocket(net_log.net_log(), net_log.source()));
-+      // fp-patches: see CreateSocket (SOCKS5 UDP-ASSOCIATE routing).
++      // Stealth Chromium: see CreateSocket (SOCKS5 UDP-ASSOCIATE routing).
 +      CreateSocket(key.session_key(), net_log.net_log(), net_log.source()));
    DatagramClientSocket* socket_ptr = socket.get();
    CompletionOnceCallback connect_and_configure_callback = base::BindOnce(
@@ -2135,7 +2135,7 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
          std::move(proxy_stream_), std::move(user_agent), net_log(), network_);
    } else {
 -    if (base::FeatureList::IsEnabled(net::features::kAsyncQuicSession)) {
-+    // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md):
++    // Stealth Chromium (spec patches/38-socks5-udp-associate-warm-pool.md):
 +    // SOCKS5 UDP-ASSOCIATE sockets connect asynchronously by nature
 +    // (TCP control handshake to the proxy before the relay UDP socket
 +    // exists), so always create those sessions through the async path;
@@ -2155,7 +2155,7 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
  int HttpStreamFactory::Job::DoInitConnectionImpl() {
    DCHECK(!connection_->is_initialized());
  
-+  // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md): QUIC
++  // Stealth Chromium (spec patches/38-socks5-udp-associate-warm-pool.md): QUIC
 +  // is allowed over a single-hop SOCKS5 proxy via UDP ASSOCIATE.
 +  const bool quic_over_socks5 =
 +      proxy_info_.proxy_chain().is_single_proxy() &&
@@ -2171,7 +2171,7 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
      // destination. The error for an invalid condition should not be user
      // visible, because the non-alternative Job should be resumed.
 -    if (proxy_chain.AnyProxy(
-+    // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md):
++    // Stealth Chromium (spec patches/38-socks5-udp-associate-warm-pool.md):
 +    // single-hop SOCKS5 chains are exempt — QUIC rides over SOCKS5
 +    // UDP ASSOCIATE (see QuicSessionPool::CreateSocket).
 +    const bool quic_over_socks5 =
@@ -2188,7 +2188,7 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
    std::unique_ptr<StreamSocket> socket_;
    raw_ptr<SOCKSClientSocket> socks_socket_ptr_;
  
-+  // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md):
++  // Stealth Chromium (spec patches/38-socks5-udp-associate-warm-pool.md):
 +  // SOCKS5 TCP socket taken from Socks5WarmPool (method negotiation and,
 +  // when configured, username/password auth already completed). When
 +  // set, DoSOCKSConnect finishes only the CONNECT request over it.
@@ -2223,7 +2223,7 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
  
    next_state_ = STATE_TRANSPORT_CONNECT_COMPLETE;
 +
-+  // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md): if
++  // Stealth Chromium (spec patches/38-socks5-udp-associate-warm-pool.md): if
 +  // the SOCKS5 warm pool has a pre-connected (greeted/authenticated)
 +  // TCP socket to the proxy, skip the transport connect entirely and
 +  // run only the remaining CONNECT request over it. The pool is primed
@@ -2245,7 +2245,7 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
  int SOCKSConnectJob::DoSOCKSConnect() {
    next_state_ = STATE_SOCKS_CONNECT_COMPLETE;
  
-+  // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md): a
++  // Stealth Chromium (spec patches/38-socks5-udp-associate-warm-pool.md): a
 +  // socket taken from Socks5WarmPool already finished the SOCKS5
 +  // greeting (and username/password auth when configured); finish only
 +  // the CONNECT request over it.
@@ -2262,7 +2262,7 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
 +    std::unique_ptr<StreamSocket> transport =
 +        transport_connect_job_->PassSocket();
 +
-+    // fp-patches (spec patches/38-socks5-udp-associate-warm-pool.md):
++    // Stealth Chromium (spec patches/38-socks5-udp-associate-warm-pool.md):
 +    // prime the warm pool with the proxy address this job connected
 +    // to, so later SOCKS5 consumers (TCP tunnels and QUIC
 +    // UDP-ASSOCIATE sockets) find pre-greeted, pre-authenticated
@@ -2287,7 +2287,7 @@ X-Files: net/socket/socks5_datagram_client_socket.h net/socket/socks5_datagram_c
  EVENT_TYPE(SOCKS5_HANDSHAKE_READ)
  
  // ------------------------------------------------------------------------
-+// SOCKS5DatagramClientSocket (fp-patches)
++// SOCKS5DatagramClientSocket (Stealth Chromium)
 +// ------------------------------------------------------------------------
 +
 +// The start/end of a SOCKS5 UDP ASSOCIATE flow that establishes the UDP

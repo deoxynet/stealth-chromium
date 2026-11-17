@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 35] fingerprint: about:flags 'Spoof WebGL Info' entry
 X-Spec: patches/17-aboutflags-spoof-webgl.md
@@ -14,7 +14,7 @@ X-Files: third_party/blink/public/common/features.h third_party/blink/common/fea
  BLINK_COMMON_EXPORT extern const base::FeatureParam<bool>
      kSpeculativeServiceWorkerWarmUpOnPointerdown;
 +
-+// fp-patches: about:flags "Spoof WebGL Info" entry (ungoogled-chromium
++// Stealth Chromium: about:flags "Spoof WebGL Info" entry (ungoogled-chromium
 +// lineage). When enabled, WEBGL_debug_renderer_info queries report the
 +// feature-param vendor/renderer strings instead of the real GPU strings.
 +// Lower priority than the identity-seed GPU persona (gpu_fingerprint.h).
@@ -32,7 +32,7 @@ X-Files: third_party/blink/public/common/features.h third_party/blink/common/fea
  const base::FeatureParam<bool> kSpeculativeServiceWorkerWarmUpOnPointerdown{
      &kSpeculativeServiceWorkerWarmUp, "sw_warm_up_on_pointerdown", true};
  
-+// fp-patches: about:flags "Spoof WebGL Info" entry (ungoogled-chromium
++// Stealth Chromium: about:flags "Spoof WebGL Info" entry (ungoogled-chromium
 +// lineage). The default " " (single space) keeps the ungoogled behavior: a
 +// non-empty placeholder is reported when the feature is enabled without
 +// selecting one of the presets, avoiding obvious site breakage.
@@ -57,14 +57,14 @@ X-Files: third_party/blink/public/common/features.h third_party/blink/common/fea
 --- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 +++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 @@ -4051,6 +4051,16 @@
-         // fp-patches: persona renderer string when GPU spoofing is active.
+         // Stealth Chromium: persona renderer string when GPU spoofing is active.
          if (IsFingerprintGpuActive()) {
            const std::string renderer = GetGLRendererStringForFingerprint();
 +          if (!renderer.empty()) {
 +            return WebGLAny(script_state, String::FromUTF8(renderer));
 +          }
 +        }
-+        // fp-patches: about:flags "Spoof WebGL Info" fallback (ungoogled
++        // Stealth Chromium: about:flags "Spoof WebGL Info" fallback (ungoogled
 +        // lineage). Only reached when no persona renderer was served, so
 +        // the feature is inert for fingerprinted profiles.
 +        if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo)) {
@@ -74,14 +74,14 @@ X-Files: third_party/blink/public/common/features.h third_party/blink/common/fea
              return WebGLAny(script_state, String::FromUTF8(renderer));
            }
 @@ -4067,6 +4077,16 @@
-         // fp-patches: persona vendor string when GPU spoofing is active.
+         // Stealth Chromium: persona vendor string when GPU spoofing is active.
          if (IsFingerprintGpuActive()) {
            const std::string vendor = GetGLVendorStringForFingerprint();
 +          if (!vendor.empty()) {
 +            return WebGLAny(script_state, String::FromUTF8(vendor));
 +          }
 +        }
-+        // fp-patches: about:flags "Spoof WebGL Info" fallback (ungoogled
++        // Stealth Chromium: about:flags "Spoof WebGL Info" fallback (ungoogled
 +        // lineage). Only reached when no persona vendor was served, so the
 +        // feature is inert for fingerprinted profiles.
 +        if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo)) {
@@ -96,7 +96,7 @@ X-Files: third_party/blink/public/common/features.h third_party/blink/common/fea
      "Visualize overdraw by color-coding elements based on if they have other "
      "elements drawn underneath.";
  
-+// fp-patches: "Spoof WebGL Info" (ungoogled-chromium lineage).
++// Stealth Chromium: "Spoof WebGL Info" (ungoogled-chromium lineage).
 +inline constexpr char kSpoofWebglInfoName[] = "Spoof WebGL Info";
 +inline constexpr char kSpoofWebglInfoDescription[] =
 +    "Return generic values for WebGLDebugRendererInfo to remove a potential "
@@ -113,7 +113,7 @@ X-Files: third_party/blink/public/common/features.h third_party/blink/common/fea
  const FeatureEntry::FeatureVariation kLocalNetworkAccessChecksVariations[] = {
      {"(Blocking)", kLocalNetworkAccessChecksBlock, nullptr}};
 +
-+// fp-patches: vendor/renderer presets for the "Spoof WebGL Info" flag
++// Stealth Chromium: vendor/renderer presets for the "Spoof WebGL Info" flag
 +// (ungoogled-chromium lineage). Note the param defaults in
 +// third_party/blink/common/features.cc are a single space, so enabling the
 +// feature without a preset yields the blank behavior rather than the real
@@ -156,7 +156,7 @@ X-Files: third_party/blink/public/common/features.h third_party/blink/common/fea
       flag_descriptions::kWebMCPTestingDescription, kOsAll,
       FEATURE_VALUE_TYPE(blink::features::kWebMCPTesting)},
 +
-+    // fp-patches: "Spoof WebGL Info" (ungoogled-chromium lineage). The
++    // Stealth Chromium: "Spoof WebGL Info" (ungoogled-chromium lineage). The
 +    // presets feed the kSpoofWebGLInfo feature params consumed by the
 +    // UNMASKED_{VENDOR,RENDERER}_WEBGL fallback in
 +    // WebGLRenderingContextBase::getParameter().
@@ -175,8 +175,8 @@ X-Files: third_party/blink/public/common/features.h third_party/blink/common/fea
    },
    {
 +    "name": "spoof-webgl-info",
-+    "owners": [ "fp-patches@localhost" ],
-+    // fp-patches: permanent flag of this distribution's privacy patch
++    "owners": [ "stealth-chromium@localhost" ],
++    // Stealth Chromium: permanent flag of this distribution's privacy patch
 +    // series; it is not an upstream launch flag and must not expire.
 +    "expiry_milestone": -1
 +  },

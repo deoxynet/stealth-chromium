@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 34] fingerprint: WEBGL_debug_shaders translated-source synthesizer
 X-Spec: patches/13-webgl-vendor-renderer.md
@@ -10,9 +10,9 @@ X-Files: third_party/blink/renderer/modules/webgl/hlsl_synthesizer.h third_party
 --- /dev/null
 +++ b/third_party/blink/renderer/modules/webgl/hlsl_synthesizer.h
 @@ -0,0 +1,327 @@
-+// Copyright 2026 The fp-patches Authors
++// Copyright 2026 The Stealth Chromium Authors
 +// Use of this source code is governed by a GPLv3 license that can be
-+// found in the LICENSE file of the fp-patches distribution.
++// found in the LICENSE file of the Stealth Chromium distribution.
 +
 +#ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGL_HLSL_SYNTHESIZER_H_
 +#define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGL_HLSL_SYNTHESIZER_H_
@@ -26,7 +26,7 @@ X-Files: third_party/blink/renderer/modules/webgl/hlsl_synthesizer.h third_party
 +#include "gpu/GLES2/gl2.h"
 +#include "third_party/blink/public/common/switches.h"
 +
-+// fp-patches: deterministic ANGLE-D3D11-style HLSL translation for
++// Stealth Chromium: deterministic ANGLE-D3D11-style HLSL translation for
 +// WEBGL_debug_shaders.getTranslatedShaderSource() (spec
 +// patches/13-webgl-vendor-renderer.md). The windows persona claims the
 +// ANGLE D3D11 backend, so its translated sources are HLSL; instead of
@@ -352,7 +352,7 @@ X-Files: third_party/blink/renderer/modules/webgl/hlsl_synthesizer.h third_party
    if (!scoped.Context()->ValidateWebGLObject("getTranslatedShaderSource",
                                               shader))
      return "";
-+  // fp-patches: the windows persona claims the ANGLE D3D11 backend, whose
++  // Stealth Chromium: the windows persona claims the ANGLE D3D11 backend, whose
 +  // translations are HLSL. Serve a deterministic ANGLE-style HLSL
 +  // translation synthesized from the GLSL source instead of leaking the
 +  // real backend's output; other personas keep the real translation.

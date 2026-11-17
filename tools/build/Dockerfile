@@ -1,9 +1,9 @@
-# Docker image for building Chromium with fp-patches.
+# Docker image for building Chromium with Stealth Chromium.
 #
 # Usage:
-#   docker build -t fp-chromium-builder -f tools/build/Dockerfile tools/build
-#   docker run --rm -v "$PWD:/fp" -v ~/chromium-cache:/cache \
-#     fp-chromium-builder /fp/tools/build.sh /cache/chromium --ungoogled
+#   docker build -t stealth-chromium-builder -f tools/build/Dockerfile tools/build
+#   docker run --rm -v "$PWD:/stealth-chromium" -v ~/chromium-cache:/cache \
+#     stealth-chromium-builder /stealth-chromium/tools/build.sh /cache/chromium --ungoogled
 #
 # Mirrors Chromium's install-build-deps.sh (Ubuntu) package list. The
 # image only provides the environment; source, depot_tools and output

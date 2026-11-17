@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 31] fingerprint: Skia text rendering persona (hinting/subpixel per platform)
 X-Spec: patches/36-text-rendering-params.md
@@ -23,7 +23,7 @@ X-Files: third_party/blink/renderer/core/exported/web_view_impl.cc
    UpdateFontRenderingFromRendererPrefs();
 +
 +#if !BUILDFLAG(IS_MAC)
-+  // fp-patches: Skia text rendering persona (spec
++  // Stealth Chromium: Skia text rendering persona (spec
 +  // patches/36-text-rendering-params.md). The stock renderer preferences
 +  // were just applied above; for the spoofed desktop personas, override
 +  // the rasterization knobs afterwards so text is drawn the way real

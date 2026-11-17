@@ -1,4 +1,4 @@
-# Rebasing fp-patches onto a new Chromium version
+# Rebasing Stealth Chromium onto a new Chromium version
 
 The maintenance loop for this repo. Budget an hour or two per major
 version bump; most bumps only need minutes because patches are small and
@@ -35,8 +35,8 @@ Each failing patch fails for one of three reasons:
 
 ```bash
 # in your chromium/src checkout at the new version:
-git checkout -b fp-patches-rebase
-for p in ~/fp-patches/series/*.patch; do
+git checkout -b stealth-chromium-rebase
+for p in ~/stealth-chromium/series/*.patch; do
   git am -3 "$p" || break
 done
 # fix the failing commit: edit files, then
@@ -52,7 +52,7 @@ plus `X-Spec` header.
 If you worked in a checkout, export the series back:
 
 ```bash
-git format-patch <base>..HEAD -o ~/fp-patches/series/
+git format-patch <base>..HEAD -o ~/stealth-chromium/series/
 ```
 
 (keep the numbering prefix, e.g. `git format-patch -N` then rename), or

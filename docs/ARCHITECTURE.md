@@ -1,4 +1,4 @@
-# fp-patches architecture
+# Stealth Chromium architecture
 
 ## The identity seed
 

@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 8/33] fingerprint: timezone override (ICU default + change events)
 X-Spec: patches/19-timezone.md
@@ -26,7 +26,7 @@ X-Files: third_party/blink/renderer/core/timezone/timezone_controller.cc
    return String(unicode::ToSpan(unicode_timezone_id));
  }
  
-+// fp-patches: the persona timezone from --fingerprint-timezone, when set.
++// Stealth Chromium: the persona timezone from --fingerprint-timezone, when set.
 +// Accepts IANA ids (America/New_York) and custom offsets (GMT+8); empty or
 +// unset means no override.
 +String FingerprintTimezoneId() {
@@ -53,7 +53,7 @@ X-Files: third_party/blink/renderer/core/timezone/timezone_controller.cc
    if (!base::FeatureList::IsEnabled(kLazyBlinkTimezoneInit)) {
      host_timezone_id_ = GetCurrentTimezoneId();
    }
-+  // fp-patches: adopt the persona timezone as the process ICU default so
++  // Stealth Chromium: adopt the persona timezone as the process ICU default so
 +  // Date and Intl agree from isolate creation on. Invalid ids degrade to
 +  // ICU's unknown zone (GMT) rather than falling back to the real zone.
 +  if (String fingerprint_tz = FingerprintTimezoneId(); !fingerprint_tz.empty()) {
@@ -76,7 +76,7 @@ X-Files: third_party/blink/renderer/core/timezone/timezone_controller.cc
  
    base::AutoLock locker(instance().lock_);
  
-+  // fp-patches: OS-reported timezone changes are re-labeled with the
++  // Stealth Chromium: OS-reported timezone changes are re-labeled with the
 +  // persona zone so the host's real zone never leaks through the event.
 +  String effective_timezone_id = timezone_id;
 +  if (String fingerprint_tz = FingerprintTimezoneId();

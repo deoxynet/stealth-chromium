@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# check-ungoogled.sh — can fp-patches stack on an ungoogled-chromium tree?
+# check-ungoogled.sh — can Stealth Chromium stack on an ungoogled-chromium tree?
 #
 # The vendor binary audited by the reversing workspace is
 # ungoogled-chromium + fingerprint patches. This simulates that stack on
 # the sparse mirror: each ungoogled patch (in series order) is applied
 # restricted to the files present in the mirror (--include), then the
-# fp-patches series is applied on top. Reports per-layer results.
+# Stealth Chromium series is applied on top. Reports per-layer results.
 #
 # Usage:
 #   tools/check-ungoogled.sh <ungoogled-patches-dir> [tag]
@@ -48,11 +48,11 @@ while IFS= read -r rel; do
     ug_fail=$((ug_fail + 1)); ug_failed+=("${rel}")
   fi
 done < "${UNGOOGLED}/series"
-echo "# ungoogled: ${ug_relevant} patches touch the fp-patches surface; ${ug_applied} applied, ${ug_fail} failed"
+echo "# ungoogled: ${ug_relevant} patches touch the Stealth Chromium surface; ${ug_applied} applied, ${ug_fail} failed"
 [[ "${ug_fail}" -gt 0 ]] && printf '# ungoogled failed: %s\n' "${ug_failed[*]}"
 
 echo
-echo "# layer 2: fp-patches series on top"
+echo "# layer 2: Stealth Chromium series on top"
 pass=0; fail=0; failed=()
 for p in "${ROOT}"/series/*.patch; do
   name="$(basename "${p}")"
@@ -63,6 +63,6 @@ for p in "${ROOT}"/series/*.patch; do
   fi
 done
 echo
-echo "# fp-patches on ungoogled base: ${pass} passed, ${fail} failed"
+echo "# Stealth Chromium on ungoogled base: ${pass} passed, ${fail} failed"
 [[ "${fail}" -gt 0 ]] && printf '# failing: %s\n' "${failed[*]}"
 exit $((fail > 0 ? 1 : 0))

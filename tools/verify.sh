@@ -21,7 +21,7 @@ SERIES_DIR="${ROOT}/series"
 CHECK="$(mktemp -d "${ROOT}/.verify-tree.XXXXXX")"
 trap 'rm -rf "${CHECK}"' EXIT
 
-echo "# verifying fp-patches series against ${REF}"
+echo "# verifying Stealth Chromium series against ${REF}"
 # Per-ref mirror (default inside fetch-upstream.sh): each tested ref gets
 # its own pristine file cache, never mixed across versions.
 MIRROR="${ROOT}/.upstream-mirror/$(printf '%s' "${REF}" | tr '/.' '__')"

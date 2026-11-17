@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 6/33] fingerprint: report AudioContext.sampleRate as 48000
 X-Spec: patches/34-audiocontext-samplerate.md
@@ -21,7 +21,7 @@ X-Files: third_party/blink/renderer/modules/webaudio/realtime_audio_destination_
  }
  
  double RealtimeAudioDestinationHandler::SampleRate() const {
-+  // fp-patches: report the persona rate. 48 kHz is the near-universal
++  // Stealth Chromium: report the persona rate. 48 kHz is the near-universal
 +  // default on Windows (WASAPI shared) and modern Linux (PipeWire); the
 +  // real render quantum/hardware rate is untouched.
 +  if (fingerprint::Enabled()) {

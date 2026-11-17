@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 33] fingerprint: WebGL per-GPU consistency (precision/extensions/formats)
 X-Spec: patches/14-webgl-consistency.md
@@ -21,7 +21,7 @@ X-Files: third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.c
  
  bool WebGLRenderingContextBase::ExtensionSupportedAndAllowed(
      const ExtensionTracker* tracker) {
-+  // fp-patches: shape the extension list to the persona GPU. Compressed
++  // Stealth Chromium: shape the extension list to the persona GPU. Compressed
 +  // texture / multiview / snorm extensions leak the real hardware, and the
 +  // timer-query extensions are force-shipped (bypassing the draft/dev
 +  // runtime flags) when the backend supports them. Stock gating otherwise.
@@ -55,7 +55,7 @@ X-Files: third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.c
        return nullptr;
 +  }
 +
-+  // fp-patches: persona precision for lowp/mediump — the safe cross-GPU
++  // Stealth Chromium: persona precision for lowp/mediump — the safe cross-GPU
 +  // values (binary32 for floats, 31/30/0 for ints). highp keeps querying
 +  // the real driver so actual shader compilation behavior is unchanged.
 +  if (IsFingerprintGpuActive()) {
@@ -86,7 +86,7 @@ X-Files: third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.c
  
    switch (pname) {
      case GL_SAMPLES: {
-+      // fp-patches: persona MSAA sample counts, consistent with the spoofed
++      // Stealth Chromium: persona MSAA sample counts, consistent with the spoofed
 +      // renderer: macOS persona ships 4x MSAA, the NVIDIA persona 8x, other
 +      // desktop personas 16x. Falls through to the real driver query when
 +      // GPU spoofing is off.

@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 15/33] fingerprint: deterministic AudioBuffer sample noise
 X-Spec: patches/06-audio-noise.md
@@ -14,7 +14,7 @@ X-Files: third_party/blink/renderer/modules/webaudio/audio_buffer.h third_party/
  
    HeapVector<Member<DOMFloat32Array>> channels_;
 +
-+  // fp-patches: bit per channel marking that the deterministic noise has
++  // Stealth Chromium: bit per channel marking that the deterministic noise has
 +  // been applied, so repeated reads never accumulate.
 +  uint32_t noise_channel_mask_ = 0;
  };
@@ -38,7 +38,7 @@ X-Files: third_party/blink/renderer/modules/webaudio/audio_buffer.h third_party/
 +
 +namespace {
 +
-+// fp-patches: deterministic per-sample perturbation of AudioBuffer channel
++// Stealth Chromium: deterministic per-sample perturbation of AudioBuffer channel
 +// data (±5e-6 amplitude), keyed to (identity seed, sample index). Applied
 +// once per channel before JS sees the data.
 +void ApplyAudioFingerprintNoise(float* data, size_t length) {
@@ -65,7 +65,7 @@ X-Files: third_party/blink/renderer/modules/webaudio/audio_buffer.h third_party/
  
 -  return NotShared<DOMFloat32Array>(channels_[channel_index].Get());
 +  DOMFloat32Array* array = channels_[channel_index].Get();
-+  // fp-patches: perturb channel data once per channel (guard bit prevents
++  // Stealth Chromium: perturb channel data once per channel (guard bit prevents
 +  // accumulation across repeated getChannelData/copyFromChannel calls).
 +  if (array && channel_index < 32 &&
 +      !(noise_channel_mask_ & (1u << channel_index))) {
@@ -81,7 +81,7 @@ X-Files: third_party/blink/renderer/modules/webaudio/audio_buffer.h third_party/
      return;
    }
  
-+  // fp-patches: perturb the source channel once before copying out.
++  // Stealth Chromium: perturb the source channel once before copying out.
 +  if (channel_number < 32) {
 +    DOMFloat32Array* source_array = channels_[channel_number].Get();
 +    if (source_array && !(noise_channel_mask_ & (1u << channel_number))) {

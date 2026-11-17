@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 7/33] fingerprint: screen dimensions, taskbar band and media-query consistency
 X-Spec: patches/11-screen-dimensions.md
@@ -21,7 +21,7 @@ X-Files: third_party/blink/renderer/core/frame/screen.cc third_party/blink/rende
  int Screen::height() const {
    if (!DomWindow())
      return 0;
-+  // fp-patches: switch override, then persona default (900 on macOS).
++  // Stealth Chromium: switch override, then persona default (900 on macOS).
 +  if (auto h = fingerprint::SpoofedScreenHeight()) {
 +    return *h;
 +  }
@@ -31,7 +31,7 @@ X-Files: third_party/blink/renderer/core/frame/screen.cc third_party/blink/rende
  int Screen::width() const {
    if (!DomWindow())
      return 0;
-+  // fp-patches: switch override, then persona default (1440 on macOS).
++  // Stealth Chromium: switch override, then persona default (1440 on macOS).
 +  if (auto w = fingerprint::SpoofedScreenWidth()) {
 +    return *w;
 +  }
@@ -42,7 +42,7 @@ X-Files: third_party/blink/renderer/core/frame/screen.cc third_party/blink/rende
  int Screen::availHeight() const {
    if (!DomWindow())
      return 0;
-+  // fp-patches: spoofed height minus the persona taskbar/Dock band.
++  // Stealth Chromium: spoofed height minus the persona taskbar/Dock band.
 +  if (auto h = fingerprint::SpoofedScreenHeight()) {
 +    return fingerprint::ApplyTaskbar(*h, fingerprint::TaskbarHeight());
 +  }
@@ -58,7 +58,7 @@ X-Files: third_party/blink/renderer/core/frame/screen.cc third_party/blink/rende
  int Screen::availWidth() const {
    if (!DomWindow())
      return 0;
-+  // fp-patches: availWidth mirrors width() (horizontal taskbar assumption).
++  // Stealth Chromium: availWidth mirrors width() (horizontal taskbar assumption).
 +  if (auto w = fingerprint::SpoofedScreenWidth()) {
 +    return *w;
 +  }
@@ -83,7 +83,7 @@ X-Files: third_party/blink/renderer/core/frame/screen.cc third_party/blink/rende
  
  int MediaValues::CalculateDeviceWidth(LocalFrame* frame) {
    DCHECK(frame && frame->View() && frame->GetSettings() && frame->GetPage());
-+  // fp-patches: media queries see the same spoofed device size as
++  // Stealth Chromium: media queries see the same spoofed device size as
 +  // window.screen, so JS and CSS cannot disagree.
 +  if (auto w = fingerprint::SpoofedScreenWidth()) {
 +    return *w;
@@ -95,7 +95,7 @@ X-Files: third_party/blink/renderer/core/frame/screen.cc third_party/blink/rende
  
  int MediaValues::CalculateDeviceHeight(LocalFrame* frame) {
    DCHECK(frame && frame->View() && frame->GetSettings() && frame->GetPage());
-+  // fp-patches: see CalculateDeviceWidth.
++  // Stealth Chromium: see CalculateDeviceWidth.
 +  if (auto h = fingerprint::SpoofedScreenHeight()) {
 +    return *h;
 +  }
@@ -105,9 +105,9 @@ X-Files: third_party/blink/renderer/core/frame/screen.cc third_party/blink/rende
 --- /dev/null
 +++ b/third_party/blink/renderer/core/fingerprint/screen_dimensions.h
 @@ -0,0 +1,72 @@
-+// Copyright 2026 The fp-patches Authors
++// Copyright 2026 The Stealth Chromium Authors
 +// Use of this source code is governed by a GPLv3 license that can be
-+// found in the LICENSE file of the fp-patches distribution.
++// found in the LICENSE file of the Stealth Chromium distribution.
 +
 +#ifndef THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_SCREEN_DIMENSIONS_H_
 +#define THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_SCREEN_DIMENSIONS_H_

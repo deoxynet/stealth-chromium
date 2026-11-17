@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 12/33] fingerprint: deterministic canvas image-data pixel noise
 X-Spec: patches/03-canvas-image-data-noise.md
@@ -13,7 +13,7 @@ X-Files: third_party/blink/renderer/platform/graphics/static_bitmap_image.h thir
  
    StaticBitmapImage(ImageOrientation orientation) : orientation_(orientation) {}
  
-+  // fp-patches: perturbs at most 10 pixels by one LSB per color channel,
++  // Stealth Chromium: perturbs at most 10 pixels by one LSB per color channel,
 +  // deterministically per identity seed. Applied to canvas/WebGL readback
 +  // data (getImageData, toDataURL, toBlob, readPixels).
 +  static void ShuffleSubchannelColorData(const void* addr,
@@ -151,7 +151,7 @@ X-Files: third_party/blink/renderer/platform/graphics/static_bitmap_image.h thir
            snapshot->PaintImageForCurrentFrame().GetSkImageInfo().bounds();
        DCHECK(!bounds.intersect(SkIRect::MakeXYWH(sx, sy, sw, sh)));
 +    } else if (fingerprint::NoiseEnabled()) {
-+      // fp-patches: deterministic per-seed pixel noise on readback data.
++      // Stealth Chromium: deterministic per-seed pixel noise on readback data.
 +      StaticBitmapImage::ShuffleSubchannelColorData(
 +          image_data_pixmap.writable_addr(), image_data_pixmap.info(), 0, 0);
      }
@@ -163,7 +163,7 @@ X-Files: third_party/blink/renderer/platform/graphics/static_bitmap_image.h thir
                            const SkPixmap& src,
                            ImageEncodingMimeType mime_type,
                            double quality) {
-+  // fp-patches: single choke point for toDataURL/toBlob encoding — perturb
++  // Stealth Chromium: single choke point for toDataURL/toBlob encoding — perturb
 +  // the source pixels before any codec sees them.
 +  if (fingerprint::NoiseEnabled() && src.writable_addr()) {
 +    StaticBitmapImage::ShuffleSubchannelColorData(src.writable_addr(),
@@ -194,7 +194,7 @@ X-Files: third_party/blink/renderer/platform/graphics/static_bitmap_image.h thir
    if (fail_encoder_initialization_for_test_) {
      return false;
    }
-+  // fp-patches: perturb source pixels before the async encoder starts.
++  // Stealth Chromium: perturb source pixels before the async encoder starts.
 +  if (fingerprint::NoiseEnabled() && src_data_.writable_addr()) {
 +    StaticBitmapImage::ShuffleSubchannelColorData(
 +        src_data_.writable_addr(), src_data_.info(), 0, 0);
@@ -226,7 +226,7 @@ X-Files: third_party/blink/renderer/platform/graphics/static_bitmap_image.h thir
      ContextGL()->ReadPixels(x, y, width, height, format, type, data);
 +  }
 +
-+  // fp-patches: apply the canvas pixel noise to WebGL readPixels results.
++  // Stealth Chromium: apply the canvas pixel noise to WebGL readPixels results.
 +  // Only byte formats are handled (same formats as the canvas noise).
 +  if (fingerprint::NoiseEnabled() && data && width > 0 && height > 0 &&
 +      ((format == GL_RGBA && type == GL_UNSIGNED_BYTE) ||

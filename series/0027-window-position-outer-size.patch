@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 27] fingerprint: window position + outer size persona
 X-Spec: patches/31-window-position-outer-size.md
@@ -23,7 +23,7 @@ X-Files: third_party/blink/renderer/core/frame/local_dom_window.cc
    return resolver->Promise();
 +}
 +
-+// fp-patches: seed-derived window origin inside the spoofed screen (spec
++// Stealth Chromium: seed-derived window origin inside the spoofed screen (spec
 +// patches/31-window-position-outer-size.md). The vendor build hashed
 +// seed + "screenX"/"screenY" into the band left by fixed margins around
 +// the screen edges (50px horizontal, 30px vertical) after subtracting the
@@ -62,7 +62,7 @@ X-Files: third_party/blink/renderer/core/frame/local_dom_window.cc
                  chrome_client.GetScreenInfo(*frame).device_scale_factor));
    }
 -  return chrome_client.RootWindowRect(*frame).height();
-+  // fp-patches: never report an outer size larger than the spoofed
++  // Stealth Chromium: never report an outer size larger than the spoofed
 +  // screen's available area — hides headless "window bigger than screen"
 +  // tells and keeps outer* consistent with screen.avail* (spec 31).
 +  if (fingerprint::Enabled()) {
@@ -89,7 +89,7 @@ X-Files: third_party/blink/renderer/core/frame/local_dom_window.cc
                  chrome_client.GetScreenInfo(*frame).device_scale_factor));
    }
 -  return chrome_client.RootWindowRect(*frame).width();
-+  // fp-patches: see outerHeight — outerWidth = min(real, availWidth).
++  // Stealth Chromium: see outerHeight — outerWidth = min(real, availWidth).
 +  if (fingerprint::Enabled()) {
 +    // The Screen accessor is non-const only because it lazily creates the
 +    // window's Screen; reading it from these const getters is safe.
@@ -105,7 +105,7 @@ X-Files: third_party/blink/renderer/core/frame/local_dom_window.cc
    if (!page)
      return 0;
 +
-+  // fp-patches: seed-derived window origin inside the spoofed screen
++  // Stealth Chromium: seed-derived window origin inside the spoofed screen
 +  // (spec 31); replaces the stock ChromeClient position (including the
 +  // physical-pixels quirk) entirely.
 +  if (fingerprint::Enabled()) {
@@ -118,7 +118,7 @@ X-Files: third_party/blink/renderer/core/frame/local_dom_window.cc
    if (!page)
      return 0;
  
-+  // fp-patches: see screenX (margin 30 instead of 50).
++  // Stealth Chromium: see screenX (margin 30 instead of 50).
 +  if (fingerprint::Enabled()) {
 +    return FingerprintWindowOrigin(*this, /*y_axis=*/true);
 +  }

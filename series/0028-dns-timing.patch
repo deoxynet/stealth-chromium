@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 28] fingerprint: DNS/connect timing normalization
 X-Spec: patches/24-dns-timing.md
@@ -51,7 +51,7 @@ X-Files: third_party/blink/renderer/core/timing/performance_resource_timing.cc
    return fetch_initiator_type_names::kOther;
 +}
 +
-+// fp-patches: DNS/connect timing normalization (spec
++// Stealth Chromium: DNS/connect timing normalization (spec
 +// patches/24-dns-timing.md). Behind a proxy there is no local DNS
 +// resolution, so cross-origin Resource Timing would otherwise expose
 +// domainLookupStart == domainLookupEnd (== 0 or fetchStart) — a proxy-
@@ -134,7 +134,7 @@ X-Files: third_party/blink/renderer/core/timing/performance_resource_timing.cc
    if (!info_->allow_timing_details) {
      return 0.0;
 +  }
-+  // fp-patches: synthetic DNS window start.
++  // Stealth Chromium: synthetic DNS window start.
 +  if (ShouldNormalizeDnsTiming()) {
 +    const std::pair<double, double> offsets =
 +        ComputeDnsOffsets(info_->name, initiator_type_, source());
@@ -149,7 +149,7 @@ X-Files: third_party/blink/renderer/core/timing/performance_resource_timing.cc
    if (!info_->allow_timing_details) {
      return 0.0;
 +  }
-+  // fp-patches: synthetic DNS window end; clamped to end 1 ms before the
++  // Stealth Chromium: synthetic DNS window end; clamped to end 1 ms before the
 +  // real connect end and never before the (possibly synthetic) start.
 +  if (ShouldNormalizeDnsTiming()) {
 +    const std::pair<double, double> offsets =
@@ -182,7 +182,7 @@ X-Files: third_party/blink/renderer/core/timing/performance_resource_timing.cc
 +      Performance::MonotonicTimeToDOMHighResTimeStamp(
 +          TimeOrigin(), connect_start, info_->allow_negative_values,
 +          CrossOriginIsolatedCapability());
-+  // fp-patches: keep the synthetic window monotonic — never report a
++  // Stealth Chromium: keep the synthetic window monotonic — never report a
 +  // connectStart before the (possibly synthetic) domainLookupEnd.
 +  if (ShouldNormalizeDnsTiming()) {
 +    return std::max(stock_connect_start, domainLookupEnd());
@@ -195,7 +195,7 @@ X-Files: third_party/blink/renderer/core/timing/performance_resource_timing.cc
  
    if (info_->timing && info_->timing->connect_timing &&
        !info_->timing->connect_timing->ssl_start.is_null()) {
-+    // fp-patches: synthetic TLS start — connectStart() + [0.1, 0.5] ms,
++    // Stealth Chromium: synthetic TLS start — connectStart() + [0.1, 0.5] ms,
 +    // jitter derived from the un-seeded host hash.
 +    if (ShouldNormalizeDnsTiming()) {
 +      const uint32_t host_hash = DnsHostHash(ResourceHost(info_->name));

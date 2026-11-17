@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 26] fingerprint: CSS system colors (Windows persona)
 X-Spec: patches/27-system-colors.md
@@ -29,7 +29,7 @@ X-Files: third_party/blink/renderer/core/layout/layout_theme.cc third_party/blin
                                 mojom::blink::ColorScheme color_scheme,
                                 const ui::ColorProvider* color_provider,
                                 bool is_in_web_app_scope) const {
-+  // fp-patches: Windows persona for CSS system colors — serve hardcoded
++  // Stealth Chromium: Windows persona for CSS system colors — serve hardcoded
 +  // Windows-default palette values instead of the host platform's, so a
 +  // non-Windows host cannot leak its palette (GTK on Linux) through
 +  // getComputedStyle or UA rendering. Keywords without a persona color
@@ -50,14 +50,14 @@ X-Files: third_party/blink/renderer/core/layout/layout_theme.cc third_party/blin
 --- /dev/null
 +++ b/third_party/blink/renderer/core/fingerprint/windows_system_colors.h
 @@ -0,0 +1,126 @@
-+// Copyright 2026 The fp-patches Authors
++// Copyright 2026 The Stealth Chromium Authors
 +// Use of this source code is governed by a GPLv3 license that can be
-+// found in the LICENSE file of the fp-patches distribution.
++// found in the LICENSE file of the Stealth Chromium distribution.
 +
 +#ifndef THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_WINDOWS_SYSTEM_COLORS_H_
 +#define THIRD_PARTY_BLINK_RENDERER_CORE_FINGERPRINT_WINDOWS_SYSTEM_COLORS_H_
 +
-+// fp-patches: Windows-persona palette for the CSS system color keywords.
++// Stealth Chromium: Windows-persona palette for the CSS system color keywords.
 +//
 +// Serves hardcoded Windows-default colors so that a Chromium build running
 +// on a non-Windows host never leaks the host palette (GTK on Linux, Aqua on
@@ -194,7 +194,7 @@ X-Files: third_party/blink/renderer/core/layout/layout_theme.cc third_party/blin
 +
 +namespace {
 +
-+// fp-patches: gate for the Windows CSS-system-color persona (spec
++// Stealth Chromium: gate for the Windows CSS-system-color persona (spec
 +// patches/27-system-colors.md): --fingerprint must be present and not an
 +// off-value, and --fingerprint-platform must be "windows". ui/ cannot
 +// include the blink fingerprint core, so the switch names and off-value
@@ -222,7 +222,7 @@ X-Files: third_party/blink/renderer/core/layout/layout_theme.cc third_party/blin
 +
  void CompleteDefaultCssSystemColorDefinition(ui::ColorMixer& mixer,
                                               bool dark_mode) {
-+  // fp-patches: Windows persona — define the default CSS system colors from
++  // Stealth Chromium: Windows persona — define the default CSS system colors from
 +  // the hardcoded Windows 10/11 default palette instead of the
 +  // cross-platform defaults, so the ColorProvider path agrees with the
 +  // LayoutTheme::SystemColor hook and a non-Windows host cannot leak its

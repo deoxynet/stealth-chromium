@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# apply.sh — apply the fp-patches series to a Chromium checkout.
+# apply.sh — apply the Stealth Chromium series to a Chromium checkout.
 #
 # Usage:
 #   tools/apply.sh /path/to/chromium/src [--keep-going]

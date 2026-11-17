@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 11/33] fingerprint: navigator.platform persona and Web Share capability consistency
 X-Spec: patches/10-user-agent-platform.md
@@ -25,7 +25,7 @@ X-Files: third_party/blink/renderer/core/frame/navigator_id.cc chrome/renderer/c
  }
  
  String NavigatorID::platform() const {
-+  // fp-patches: persona platform token. Unknown/absent persona falls
++  // Stealth Chromium: persona platform token. Unknown/absent persona falls
 +  // through to the real OS value.
 +  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
 +          blink::switches::kFingerprintPlatform)) {
@@ -59,7 +59,7 @@ X-Files: third_party/blink/renderer/core/frame/navigator_id.cc chrome/renderer/c
      BUILDFLAG(IS_MAC)
    blink::WebRuntimeFeatures::EnableWebShare(true);
  #endif
-+  // fp-patches: navigator.share is stock-disabled on desktop Linux; the
++  // Stealth Chromium: navigator.share is stock-disabled on desktop Linux; the
 +  // Windows/macOS personas enable it so the capability set matches the
 +  // claimed OS.
 +  if (base::CommandLine::ForCurrentProcess()->HasSwitch(

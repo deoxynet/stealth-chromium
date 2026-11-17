@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 3/33] fingerprint: propagate fingerprint switches to renderer processes
 X-Spec: patches/02-switches-and-propagation.md
@@ -13,7 +13,7 @@ X-Files: content/browser/renderer_host/render_process_host_impl.cc
        switches::kEnableWebGLImageChromium,
        switches::kEnableWebGPUDeveloperFeatures,
        switches::kFileUrlPathAlias,
-+      // fp-patches: identity-seed switches consumed inside the renderer.
++      // Stealth Chromium: identity-seed switches consumed inside the renderer.
 +      blink::switches::kFingerprint,
 +      blink::switches::kFingerprintBrand,
 +      blink::switches::kFingerprintBrandVersion,

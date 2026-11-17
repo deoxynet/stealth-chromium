@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 13/33] fingerprint: deterministic measureText() metric scaling
 X-Spec: patches/04-canvas-measuretext-noise.md
@@ -13,7 +13,7 @@ X-Files: third_party/blink/renderer/core/html/canvas/text_metrics.h third_party/
  
    const Font* GetFont() const { return font_; }
  
-+  // fp-patches: scales all reported metrics by a factor near 1.0
++  // Stealth Chromium: scales all reported metrics by a factor near 1.0
 +  // (deterministic per identity seed) to defeat text-metric fingerprinting.
 +  void Shuffle(const double factor);
 +
@@ -63,7 +63,7 @@ X-Files: third_party/blink/renderer/core/html/canvas/text_metrics.h third_party/
        font, direction, state.GetTextBaseline(), state.GetTextAlign(), text,
        host->GetPlainTextPainter());
 +
-+  // fp-patches: scale all reported text metrics by a fixed factor near 1.0,
++  // Stealth Chromium: scale all reported text metrics by a fixed factor near 1.0,
 +  // deterministic per identity seed (±0.0005%).
 +  if (canvas && fingerprint::NoiseEnabled()) {
 +    const double factor =

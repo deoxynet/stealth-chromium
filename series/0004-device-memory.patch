@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 4/33] fingerprint: navigator.deviceMemory override
 X-Spec: patches/07-device-memory.md
@@ -24,7 +24,7 @@ X-Files: third_party/blink/renderer/core/frame/navigator_device_memory.cc
  namespace blink {
  
  float NavigatorDeviceMemory::deviceMemory() const {
-+  // fp-patches: unbucketed override (launcher passes a realistic bucketed
++  // Stealth Chromium: unbucketed override (launcher passes a realistic bucketed
 +  // value); 8 GiB persona default when only the identity seed is present.
 +  if (auto gb = fingerprint::SwitchDouble(switches::kFingerprintDeviceMemory)) {
 +    if (*gb > 0.0 && !std::isnan(*gb)) {

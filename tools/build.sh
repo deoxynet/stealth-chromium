@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build.sh — full browser build with fp-patches applied.
+# build.sh — full browser build with Stealth Chromium applied.
 #
 # Usage (inside the Docker image from tools/build/Dockerfile, or on a
 # machine with depot_tools + build deps installed):
@@ -57,18 +57,18 @@ if [[ "${BASE}" == "ungoogled" ]]; then
          -f domain_substitution.list "${SRC}")
 fi
 
-# --- fp-patches --------------------------------------------------------------
+# --- Stealth Chromium --------------------------------------------------------------
 "${ROOT}/tools/apply.sh" "${SRC}"
 
 # --- configure + build --------------------------------------------------------
 (cd "${SRC}" \
-  && gn gen out/fp --args="
+  && gn gen out/stealth-chromium --args="
       is_debug=false
       symbol_level=0
       dcheck_always_on=false
       treat_warnings_as_errors=false" \
-  && autoninja -C out/fp chrome)
+  && autoninja -C out/stealth-chromium chrome)
 
 echo
-echo "build complete: ${SRC}/out/fp/chrome"
-echo "validate:        python3 ${ROOT}/tools/smoke-test.py ${SRC}/out/fp/chrome"
+echo "build complete: ${SRC}/out/stealth-chromium/chrome"
+echo "validate:        python3 ${ROOT}/tools/smoke-test.py ${SRC}/out/stealth-chromium/chrome"

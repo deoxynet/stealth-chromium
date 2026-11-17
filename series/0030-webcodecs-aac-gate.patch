@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 30] fingerprint: WebCodecs AAC support persona
 X-Spec: patches/26-aac-codec.md
@@ -24,12 +24,12 @@ X-Files: third_party/blink/renderer/modules/webcodecs/audio_encoder.cc
 -      if (media::MojoAudioEncoder::IsSupported(media::AudioCodec::kAAC)) {
 +      bool platform_aac_supported =
 +          media::MojoAudioEncoder::IsSupported(media::AudioCodec::kAAC);
-+      // fp-patches: a windows persona claims platform AAC support even on
++      // Stealth Chromium: a windows persona claims platform AAC support even on
 +      // hosts without one, keeping AudioEncoder.isConfigSupported() for
 +      // 'mp4a.40.2' consistent with the claimed OS (real Windows Chrome
 +      // reports supported; the stock gate is disabled by default on
 +      // Linux). Spec patches/26-aac-codec.md; the vendor defaulted the
-+      // platform to "windows" when the switch was absent, fp-patches
++      // platform to "windows" when the switch was absent, Stealth Chromium
 +      // requires an explicit persona and falls back to stock otherwise.
 +      // The parameter allow-lists below are stock and unchanged.
 +      if (!platform_aac_supported && fingerprint::Enabled() &&

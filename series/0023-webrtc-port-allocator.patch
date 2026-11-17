@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 23] fingerprint: WebRTC port allocator force-out (IP masking)
 X-Spec: patches/21-webrtc-port-allocator.md
@@ -31,7 +31,7 @@ X-Files: third_party/blink/renderer/modules/peerconnection/peer_connection_depen
            break;
        }
  
-+      // fp-patches: when the WebRTC IP spoof is configured, force UDP/local
++      // Stealth Chromium: when the WebRTC IP spoof is configured, force UDP/local
 +      // candidate gathering back on regardless of the privacy policy so
 +      // there are host candidates for patches 24/25 to rewrite at the string
 +      // level. enable_multiple_routes (adapter enumeration filtering) and

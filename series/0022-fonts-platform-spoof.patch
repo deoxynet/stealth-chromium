@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 22] fingerprint: font platform spoofing + per-platform font databases
 X-Spec: patches/18-fonts.md
@@ -26,7 +26,7 @@ X-Files: third_party/blink/renderer/platform/fonts/font_cache.cc third_party/bli
    }
  #endif
 +
-+  // fp-patches: font platform spoofing (patches/18-fonts.md). Under a
++  // Stealth Chromium: font platform spoofing (patches/18-fonts.md). Under a
 +  // cross-platform persona, families that exist only on the host OS are
 +  // reported unavailable (as the spoofed OS would), and Windows-only
 +  // families are re-aimed at metric-compatible local fonts. Everything
@@ -47,9 +47,9 @@ X-Files: third_party/blink/renderer/platform/fonts/font_cache.cc third_party/bli
 --- /dev/null
 +++ b/third_party/blink/renderer/platform/fonts/fingerprint_font_databases.h
 @@ -0,0 +1,932 @@
-+// Copyright 2026 The fp-patches Authors
++// Copyright 2026 The Stealth Chromium Authors
 +// Use of this source code is governed by a GPLv3 license that can be
-+// found in the LICENSE file of the fp-patches distribution.
++// found in the LICENSE file of the Stealth Chromium distribution.
 +
 +#ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_FINGERPRINT_FONT_DATABASES_H_
 +#define THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_FINGERPRINT_FONT_DATABASES_H_
@@ -70,7 +70,7 @@ X-Files: third_party/blink/renderer/platform/fonts/font_cache.cc third_party/bli
 +#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 +#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 +
-+// fp-patches: per-platform font databases for font platform spoofing
++// Stealth Chromium: per-platform font databases for font platform spoofing
 +// (spec patches/18-fonts.md). The three name lists are the vendor build's
 +// recovered font inventories (patches/refs/font-databases.txt), kept
 +// verbatim: they encode what a real Windows / macOS / Linux box has

@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 1/33] fingerprint: core helpers and --fingerprint* switch constants
 X-Spec: patches/01-identity-seed.md, patches/02-switches-and-propagation.md
@@ -14,11 +14,11 @@ X-Files: third_party/blink/public/common/switches.h third_party/blink/common/swi
  BLINK_COMMON_EXPORT extern const char kDisableReduceAcceptLanguage[];
  BLINK_COMMON_EXPORT extern const char kXSLTEnabledPolicy[];
 +
-+// --- begin fingerprint patch set (fp-patches) -------------------------------
++// --- begin fingerprint patch set (Stealth Chromium) -------------------------------
 +// Identity-seed driven anti-fingerprinting switches. Declared here so that
 +// blink renderer code, content and chrome can all reference them. Definitions
 +// live in third_party/blink/common/switches.cc, semantics are documented in
-+// the fp-patches series (series/0001-fingerprint-core.patch).
++// the Stealth Chromium series (series/0001-fingerprint-core.patch).
 +BLINK_COMMON_EXPORT extern const char kFingerprint[];
 +BLINK_COMMON_EXPORT extern const char kFingerprintBrand[];
 +BLINK_COMMON_EXPORT extern const char kFingerprintBrandVersion[];
@@ -53,8 +53,8 @@ X-Files: third_party/blink/public/common/switches.h third_party/blink/common/swi
  const char kXSLTEnabledPolicy[] = "xslt-enabled-policy";
  
 +
-+// --- begin fingerprint patch set (fp-patches) ----------------------------------
-+// Values are documented alongside their consumers in the fp-patches series.
++// --- begin fingerprint patch set (Stealth Chromium) ----------------------------------
++// Values are documented alongside their consumers in the Stealth Chromium series.
 +const char kFingerprint[] = "fingerprint";
 +const char kFingerprintBrand[] = "fingerprint-brand";
 +const char kFingerprintBrandVersion[] = "fingerprint-brand-version";
@@ -87,9 +87,9 @@ X-Files: third_party/blink/public/common/switches.h third_party/blink/common/swi
 --- /dev/null
 +++ b/third_party/blink/public/common/fingerprint/fingerprint.h
 @@ -0,0 +1,211 @@
-+// Copyright 2026 The fp-patches Authors
++// Copyright 2026 The Stealth Chromium Authors
 +// Use of this source code is governed by a GPLv3 license that can be
-+// found in the LICENSE file of the fp-patches distribution.
++// found in the LICENSE file of the Stealth Chromium distribution.
 +
 +#ifndef THIRD_PARTY_BLINK_PUBLIC_COMMON_FINGERPRINT_FINGERPRINT_H_
 +#define THIRD_PARTY_BLINK_PUBLIC_COMMON_FINGERPRINT_FINGERPRINT_H_
@@ -108,7 +108,7 @@ X-Files: third_party/blink/public/common/switches.h third_party/blink/common/swi
 +// Identity-seed driven anti-fingerprinting core.
 +//
 +// One 64-bit identity seed (--fingerprint, decimal ASCII) drives every
-+// deterministic spoof in the fp-patches series. When the seed is absent the
++// deterministic spoof in the Stealth Chromium series. When the seed is absent the
 +// browser process mints a random one at startup (see
 +// ChromeMainDelegate::BasicStartupComplete), so fingerprinting is on by
 +// default; passing --fingerprint=off (also false/0/disable/disabled) turns

@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 10/33] fingerprint: UA string and UA-CH persona (brand, platform, GREASE lists)
 X-Spec: patches/09-ua-ch-brands-grease.md, patches/10-user-agent-platform.md
@@ -21,7 +21,7 @@ X-Files: components/embedder_support/user_agent_utils.cc
                                 additional_brand_version);
  }
  
-+// --- begin fp-patches persona helpers --------------------------------------
++// --- begin Stealth Chromium persona helpers --------------------------------------
 +// OS-CPU token reported inside the classic UA parentheses per platform
 +// persona. Empty when no persona is active.
 +std::string GetFingerprintOsToken() {
@@ -104,7 +104,7 @@ X-Files: components/embedder_support/user_agent_utils.cc
 +  const size_t dot = version.find('.');
 +  return dot == std::string::npos ? version : version.substr(0, dot);
 +}
-+// --- end fp-patches persona helpers ----------------------------------------
++// --- end Stealth Chromium persona helpers ----------------------------------------
 +
  // Internal function to handle return the full or "reduced" user agent string,
  // depending on the Reduce User-Agent reduction phase features.
@@ -113,7 +113,7 @@ X-Files: components/embedder_support/user_agent_utils.cc
    }
  #endif
  
-+  // fp-patches: platform persona overrides both the classic and the
++  // Stealth Chromium: platform persona overrides both the classic and the
 +  // unified/reduced UA OS token; a non-Chrome persona appends its brand
 +  // token after the Chrome token, like the real browsers do.
 +  if (std::string os_token = GetFingerprintOsToken(); !os_token.empty()) {
@@ -134,7 +134,7 @@ X-Files: components/embedder_support/user_agent_utils.cc
    metadata.wow64 = IsWoW64();
    metadata.platform_version = GetPlatformVersion();
 +
-+  // fp-patches: persona brand lists and platform fields. Brand lists keep
++  // Stealth Chromium: persona brand lists and platform fields. Brand lists keep
 +  // the real Chromium entry plus GREASE, shuffled with the stock permutation
 +  // seeded by the Chromium major version (matches stock Chrome formatting).
 +  // full_version/model/mobile/bitness/wow64 keep their stock values.

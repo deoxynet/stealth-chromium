@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fp-patches post-build smoke test.
+"""Stealth Chromium post-build smoke test.
 
 Launches the built Chromium binary headless over CDP and asserts the
 fingerprint contract implemented by the series:
@@ -13,7 +13,7 @@ fingerprint contract implemented by the series:
   * timezone / locale / UA / storage-quota / WebGL / mediaDevices personas
 
 Usage:
-    python3 tools/smoke-test.py /path/to/out/fp/chrome
+    python3 tools/smoke-test.py /path/to/out/stealth-chromium/chrome
 
 Requires: pip install websockets   (and a binary with the patches!)
 Exit code 0 = all assertions passed.
@@ -51,12 +51,12 @@ PROBE = r"""
   g.addColorStop(0, '#f0f'); g.addColorStop(1, '#0ff');
   ctx.fillStyle = g; ctx.fillRect(0, 0, 220, 60);
   ctx.font = '16px sans-serif';
-  ctx.fillText('fp-patches \u2713 0123', 5, 40);
+  ctx.fillText('Stealth Chromium \u2713 0123', 5, 40);
   const d = ctx.getImageData(0, 0, 220, 60).data;
   let h = 0; for (let i = 0; i < d.length; i++) h = (h * 31 + d[i]) >>> 0;
   out.canvasHash = h.toString(16);
   // measureText probe
-  out.textWidth = ctx.measureText('fp-patches 0123').width;
+  out.textWidth = ctx.measureText('Stealth Chromium 0123').width;
   // clientRects probe
   const el = document.createElement('div');
   el.style.cssText = 'position:absolute;width:317px;height:151px;';

@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 25] fingerprint: RTCStatsReport address spoof
 X-Spec: patches/23-webrtc-stats-spoof.md
@@ -32,7 +32,7 @@ X-Files: third_party/blink/renderer/modules/peerconnection/rtc_stats_report.cc
    return v8_stat;
 +}
 +
-+// fp-patches: substitute the --fingerprint-webrtc-ip value for candidate
++// Stealth Chromium: substitute the --fingerprint-webrtc-ip value for candidate
 +// stat addresses. Passes the input through when the spoof is inactive
 +// (fingerprinting off, switch absent, empty or non-ASCII value) or the
 +// input is empty/loopback/wildcard — the same exemption set as the ICE
@@ -60,7 +60,7 @@ X-Files: third_party/blink/renderer/modules/peerconnection/rtc_stats_report.cc
        MakeGarbageCollected<RTCIceCandidateStats>(script_state->GetIsolate());
    SET_STAT(webrtc_stat.transport_id, v8_stat->setTransportId);
 -  SET_STAT(webrtc_stat.address, v8_stat->setAddress);
-+  // fp-patches: address/relatedAddress/ip carry the spoofed IP (see
++  // Stealth Chromium: address/relatedAddress/ip carry the spoofed IP (see
 +  // MaybeSpoofStatsAddress above); ports and every other member are
 +  // passed through untouched.
 +  if (webrtc_stat.address.has_value()) {

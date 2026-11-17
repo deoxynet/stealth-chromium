@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 37] bromite-lineage: --max-connections-per-host switch + about:flags entry
 X-Spec: patches/40-carried-base-patches.md
@@ -13,7 +13,7 @@ X-Files: components/network_session_configurator/common/network_switch_list.h ch
  // Enables the QUIC protocol.  This is a temporary testing flag.
  NETWORK_SWITCH(kEnableQuic, "enable-quic")
  
-+// fp-patches (Bromite lineage): allows specifying a higher number of
++// Stealth Chromium (Bromite lineage): allows specifying a higher number of
 +// maximum connections per host (15 instead of 6, mirroring Mozilla).
 +NETWORK_SWITCH(kMaxConnectionsPerHost, "max-connections-per-host")
 +
@@ -59,7 +59,7 @@ X-Files: components/network_session_configurator/common/network_switch_list.h ch
    pref_change_registrar_.Add(metrics::prefs::kMetricsReportingEnabled,
                               base::BindRepeating(&ApplyMetricsReportingPolicy));
 +
-+  // fp-patches (Bromite lineage): --max-connections-per-host overrides the
++  // Stealth Chromium (Bromite lineage): --max-connections-per-host overrides the
 +  // hardcoded HTTP/1.1 per-host pool limit (stock: 6).
 +  int max_connections_per_host = 0;
 +  const std::string connections_switch_value =
@@ -107,7 +107,7 @@ X-Files: components/network_session_configurator/common/network_switch_list.h ch
  const FeatureEntry::FeatureVariation kLocalNetworkAccessChecksVariations[] = {
      {"(Blocking)", kLocalNetworkAccessChecksBlock, nullptr}};
  
--// fp-patches: vendor/renderer presets for the "Spoof WebGL Info" flag
+-// Stealth Chromium: vendor/renderer presets for the "Spoof WebGL Info" flag
 -// (ungoogled-chromium lineage). Note the param defaults in
 -// third_party/blink/common/features.cc are a single space, so enabling the
 -// feature without a preset yields the blank behavior rather than the real
@@ -150,7 +150,7 @@ X-Files: components/network_session_configurator/common/network_switch_list.h ch
       flag_descriptions::kWebMCPTestingDescription, kOsAll,
       FEATURE_VALUE_TYPE(blink::features::kWebMCPTesting)},
  
--    // fp-patches: "Spoof WebGL Info" (ungoogled-chromium lineage). The
+-    // Stealth Chromium: "Spoof WebGL Info" (ungoogled-chromium lineage). The
 -    // presets feed the kSpoofWebGLInfo feature params consumed by the
 -    // UNMASKED_{VENDOR,RENDERER}_WEBGL fallback in
 -    // WebGLRenderingContextBase::getParameter().
@@ -185,7 +185,7 @@ X-Files: components/network_session_configurator/common/network_switch_list.h ch
      "Visualize overdraw by color-coding elements based on if they have other "
      "elements drawn underneath.";
  
--// fp-patches: "Spoof WebGL Info" (ungoogled-chromium lineage).
+-// Stealth Chromium: "Spoof WebGL Info" (ungoogled-chromium lineage).
 -inline constexpr char kSpoofWebglInfoName[] = "Spoof WebGL Info";
 -inline constexpr char kSpoofWebglInfoDescription[] =
 -    "Return generic values for WebGLDebugRendererInfo to remove a potential "

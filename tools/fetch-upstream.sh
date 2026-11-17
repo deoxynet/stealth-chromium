@@ -12,12 +12,12 @@
 set -euo pipefail
 
 # Sanitize a ref (tags/branches/slashes) into a single path component.
-__fp_sanitize_ref() {
+__stealth_chromium_sanitize_ref() {
   printf '%s' "$1" | tr '/.' '__'
 }
 
 REF="${1:?usage: fetch-upstream.sh <tag-or-ref> [mirror-dir]}"
-MIRROR="${2:-.upstream-mirror/$(__fp_sanitize_ref "${REF}")}"
+MIRROR="${2:-.upstream-mirror/$(__stealth_chromium_sanitize_ref "${REF}")}"
 SERIES_DIR="$(cd "$(dirname "$0")/../series" && pwd)"
 BASE_URL="https://chromium.googlesource.com/chromium/src/+/${REF}"
 
@@ -44,7 +44,7 @@ fi
 # Paths under v8/ live in the separate V8 repository, checked out at the
 # revision this Chromium ref pins in its DEPS ("v8_revision"). Resolve that
 # once per ref and serve those files from the V8 mirror instead.
-__fp_v8_revision() {
+__stealth_chromium_v8_revision() {
   local cache="${MIRROR}/.v8_revision"
   if [[ -s "${cache}" ]]; then
     cat "${cache}"
@@ -71,7 +71,7 @@ while IFS= read -r rel; do
   url="${BASE_URL}/${rel}"
   if [[ "${rel}" == v8/* ]]; then
     if [[ -z "${V8_REV:-}" ]]; then
-      V8_REV="$(__fp_v8_revision)"
+      V8_REV="$(__stealth_chromium_v8_revision)"
       if [[ -z "${V8_REV}" ]]; then
         echo "MISSING v8_revision in DEPS for ${REF}" >&2
         fail=$((fail + 1))

@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 21] fingerprint: PointerEvent CDP stealth (kFromDebugger scrub + synthetic coalesced events)
 X-Spec: patches/33-pointer-event-input-stealth.md
@@ -21,7 +21,7 @@ X-Files: third_party/blink/renderer/core/events/pointer_event_factory.cc
    pointer_event_init->setTwist(web_pointer_event.twist);
  }
  
-+// fp-patches: CDP-injected mouse moves (kFromDebugger set) reach the
++// Stealth Chromium: CDP-injected mouse moves (kFromDebugger set) reach the
 +// renderer with an empty coalesced vector, while real OS input carries
 +// coalesced samples. Synthesize a 3–5 sample stream between the previous
 +// and current position — ±0.15 px per-axis jitter, interpolated
@@ -103,7 +103,7 @@ X-Files: third_party/blink/renderer/core/events/pointer_event_factory.cc
 +  UpdateCommonPointerEventInit(web_pointer_event, last_screen_position, view,
 +                               pointer_event_init);
  
-+  // fp-patches: strip the CDP/DevTools marker bit (kFromDebugger) before it
++  // Stealth Chromium: strip the CDP/DevTools marker bit (kFromDebugger) before it
 +  // reaches the DOM event; real OS input never carries it.
 +  int dom_modifiers = web_pointer_event.GetModifiers();
 +  const bool from_debugger =
@@ -122,7 +122,7 @@ X-Files: third_party/blink/renderer/core/events/pointer_event_factory.cc
        predicted_pointer_events;
    if (type == event_type_names::kPointermove ||
        type == event_type_names::kPointerrawupdate) {
-+    // fp-patches: CDP mouse moves arrive with an empty coalesced vector —
++    // Stealth Chromium: CDP mouse moves arrive with an empty coalesced vector —
 +    // serve a synthesized human-looking stream instead.
 +    Vector<WebPointerEvent> effective_coalesced = coalesced_events;
 +    if (blink::fingerprint::Enabled() && from_debugger &&

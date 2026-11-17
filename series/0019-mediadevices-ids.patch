@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 19/33] fingerprint: deterministic enumerateDevices() ids and group ids
 X-Spec: patches/35-mediadevices-ids.md
@@ -24,7 +24,7 @@ X-Files: third_party/blink/renderer/modules/mediastream/media_devices.cc
 +
  namespace {
  
-+// fp-patches: 16 lowercase hex chars from the identity-seed hash of
++// Stealth Chromium: 16 lowercase hex chars from the identity-seed hash of
 +// |purpose| — mirrors the vendor's HexEncodeLower(hash64(seed + suffix)).
 +std::string FingerprintMediaId(const std::string& purpose) {
 +  const uint64_t hash = blink::fingerprint::HashFor(purpose);
@@ -47,7 +47,7 @@ X-Files: third_party/blink/renderer/modules/mediastream/media_devices.cc
            static_cast<mojom::blink::MediaDeviceType>(i);
        WebMediaDeviceInfo device_info = enumeration[i][j];
 +
-+      // fp-patches: deterministic seed-derived device/group ids. Real host
++      // Stealth Chromium: deterministic seed-derived device/group ids. Real host
 +      // device topology (ids, counts, grouping) is not exposed; labels keep
 +      // their permission-gated stock behavior.
 +      if (fingerprint::Enabled()) {

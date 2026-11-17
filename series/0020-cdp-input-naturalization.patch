@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 20] fingerprint: naturalize CDP-injected input (timestamp jitter, key code derivation, force NaN)
 X-Spec: patches/29-cdp-input-timing.md
@@ -44,7 +44,7 @@ X-Files: content/browser/devtools/protocol/input_handler.cc
 +    return base::Seconds(timestamp.value()) + base::TimeTicks::UnixEpoch();
 +  }
 +  base::TimeTicks now = base::TimeTicks::Now();
-+  // fp-patches: untimed CDP input carries the exact dispatch instant; real
++  // Stealth Chromium: untimed CDP input carries the exact dispatch instant; real
 +  // OS input never does. Skew each event by a fresh 0..2999 µs (LCG over
 +  // the tick value itself, vendor constants) so event.timeStamp looks
 +  // organic. Explicit CDP timestamps pass through untouched.
@@ -67,7 +67,7 @@ X-Files: content/browser/devtools/protocol/input_handler.cc
 +  mouse_event->force =
 +      force.has_value()
 +          ? static_cast<float>(force.value())
-+          // fp-patches: real OS mouse events keep the NaN default of
++          // Stealth Chromium: real OS mouse events keep the NaN default of
 +          // WebPointerProperties::force; stock CDP forced 0.0, making
 +          // pressure/force JS-visible behavior differ between real and
 +          // synthetic input.
@@ -83,7 +83,7 @@ X-Files: content/browser/devtools/protocol/input_handler.cc
          static_cast<int>(ui::KeycodeConverter::KeyStringToDomKey(key.value()));
 +  }
 +
-+  // fp-patches: CDP callers commonly omit `code`; stock leaves dom_code =
++  // Stealth Chromium: CDP callers commonly omit `code`; stock leaves dom_code =
 +  // NONE (event.code == "" in the page — a synthetic-input tell). Derive
 +  // the US-layout DomCode implied by `key`, as a real key press would.
 +  if (!code.has_value() && key.has_value() &&

@@ -3,3 +3,5 @@
 .base/
 .work/
 .probe/
+__pycache__/
+*.py[cod]

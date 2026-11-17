@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 18/33] fingerprint: per-persona speechSynthesis voice lists
 X-Spec: patches/32-speech-synthesis-voices.md
@@ -26,7 +26,7 @@ X-Files: third_party/blink/renderer/modules/speech/speech_synthesis.cc
      Vector<mojom::blink::SpeechSynthesisVoicePtr> mojom_voices) {
    voice_list_.clear();
 +
-+  // fp-patches: replace the host's real TTS voices with the persona's
++  // Stealth Chromium: replace the host's real TTS voices with the persona's
 +  // table (matching what stock Chrome reports on that OS). Not seed-
 +  // randomized: every session of a persona reports the same voice list.
 +  // speechSynthesis.speak still routes to the real backend.

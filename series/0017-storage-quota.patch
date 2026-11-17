@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 17/33] fingerprint: navigator.storage quota persona
 X-Spec: patches/12-storage-quota.md
@@ -10,9 +10,9 @@ X-Files: third_party/blink/renderer/modules/quota/fingerprint_quota.h third_part
 --- /dev/null
 +++ b/third_party/blink/renderer/modules/quota/fingerprint_quota.h
 @@ -0,0 +1,51 @@
-+// Copyright 2026 The fp-patches Authors
++// Copyright 2026 The Stealth Chromium Authors
 +// Use of this source code is governed by a GPLv3 license that can be
-+// found in the LICENSE file of the fp-patches distribution.
++// found in the LICENSE file of the Stealth Chromium distribution.
 +
 +#ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_QUOTA_FINGERPRINT_QUOTA_H_
 +#define THIRD_PARTY_BLINK_RENDERER_MODULES_QUOTA_FINGERPRINT_QUOTA_H_
@@ -76,7 +76,7 @@ X-Files: third_party/blink/renderer/modules/quota/fingerprint_quota.h third_part
    StorageEstimate* estimate = StorageEstimate::Create();
    estimate->setUsage(usage_in_bytes);
 -  estimate->setQuota(quota_in_bytes);
-+  // fp-patches: persona quota (deterministic per seed, [400, 600) MiB);
++  // Stealth Chromium: persona quota (deterministic per seed, [400, 600) MiB);
 +  // usage stays real.
 +  estimate->setQuota(fingerprint::ApplyQuotaPersona(quota_in_bytes,
 +                                                    usage_in_bytes));
@@ -99,7 +99,7 @@ X-Files: third_party/blink/renderer/modules/quota/fingerprint_quota.h third_part
    if (success_callback) {
 -    success_callback->InvokeAndReportException(nullptr, usage_in_bytes,
 -                                               quota_in_bytes);
-+    // fp-patches: persona quota (see fingerprint_quota.h).
++    // Stealth Chromium: persona quota (see fingerprint_quota.h).
 +    success_callback->InvokeAndReportException(
 +        nullptr, usage_in_bytes,
 +        fingerprint::ApplyQuotaPersona(quota_in_bytes, usage_in_bytes));
@@ -111,7 +111,7 @@ X-Files: third_party/blink/renderer/modules/quota/fingerprint_quota.h third_part
          nullptr,
          std::min(base::saturated_cast<int64_t>(requested_quota_in_bytes),
 -                 quota_in_bytes));
-+                 // fp-patches: persona quota as the grant ceiling.
++                 // Stealth Chromium: persona quota as the grant ceiling.
 +                 fingerprint::ApplyQuotaPersona(quota_in_bytes,
 +                                                usage_in_bytes)));
    }

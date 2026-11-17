@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 16/33] fingerprint: WebGL vendor/renderer persona with NVIDIA model database
 X-Spec: patches/13-webgl-vendor-renderer.md, patches/15-gpu-model-database.md
@@ -22,7 +22,7 @@ X-Files: third_party/blink/renderer/modules/webgl/gpu_fingerprint.h third_party/
    max_renderbuffer_size_ = 0;
    ContextGL()->GetIntegerv(GL_MAX_RENDERBUFFER_SIZE, &max_renderbuffer_size_);
 +
-+  // fp-patches: persona GPU limits. Real hardware report stays untouched
++  // Stealth Chromium: persona GPU limits. Real hardware report stays untouched
 +  // internally; only the JS-visible cached limits are adjusted.
 +  if (IsFingerprintGpuActive()) {
 +    const std::string platform = ResolveFingerprintGpuPlatform();
@@ -94,7 +94,7 @@ X-Files: third_party/blink/renderer/modules/webgl/gpu_fingerprint.h third_party/
        return ScriptValue::CreateNull(script_state->GetIsolate());
      case WebGLDebugRendererInfo::kUnmaskedRendererWebgl:
        if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
-+        // fp-patches: persona renderer string when GPU spoofing is active.
++        // Stealth Chromium: persona renderer string when GPU spoofing is active.
 +        if (IsFingerprintGpuActive()) {
 +          const std::string renderer = GetGLRendererStringForFingerprint();
 +          if (!renderer.empty()) {
@@ -108,7 +108,7 @@ X-Files: third_party/blink/renderer/modules/webgl/gpu_fingerprint.h third_party/
        return ScriptValue::CreateNull(script_state->GetIsolate());
      case WebGLDebugRendererInfo::kUnmaskedVendorWebgl:
        if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
-+        // fp-patches: persona vendor string when GPU spoofing is active.
++        // Stealth Chromium: persona vendor string when GPU spoofing is active.
 +        if (IsFingerprintGpuActive()) {
 +          const std::string vendor = GetGLVendorStringForFingerprint();
 +          if (!vendor.empty()) {
@@ -121,9 +121,9 @@ X-Files: third_party/blink/renderer/modules/webgl/gpu_fingerprint.h third_party/
 --- /dev/null
 +++ b/third_party/blink/renderer/modules/webgl/gpu_fingerprint.h
 @@ -0,0 +1,32 @@
-+// Copyright 2026 The fp-patches Authors
++// Copyright 2026 The Stealth Chromium Authors
 +// Use of this source code is governed by a GPLv3 license that can be
-+// found in the LICENSE file of the fp-patches distribution.
++// found in the LICENSE file of the Stealth Chromium distribution.
 +
 +#ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGL_GPU_FINGERPRINT_H_
 +#define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGL_GPU_FINGERPRINT_H_
@@ -156,9 +156,9 @@ X-Files: third_party/blink/renderer/modules/webgl/gpu_fingerprint.h third_party/
 --- /dev/null
 +++ b/third_party/blink/renderer/modules/webgl/gpu_fingerprint.cc
 @@ -0,0 +1,196 @@
-+// Copyright 2026 The fp-patches Authors
++// Copyright 2026 The Stealth Chromium Authors
 +// Use of this source code is governed by a GPLv3 license that can be
-+// found in the LICENSE file of the fp-patches distribution.
++// found in the LICENSE file of the Stealth Chromium distribution.
 +
 +#include "third_party/blink/renderer/modules/webgl/gpu_fingerprint.h"
 +

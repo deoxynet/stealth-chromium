@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: fp-patches contributors
+From: Stealth Chromium contributors
 Date: Thu, 1 Jan 2026 00:00:00 +0000
 Subject: [PATCH 5/33] fingerprint: navigator.hardwareConcurrency override
 X-Spec: patches/08-hardware-concurrency-cdp.md
@@ -18,7 +18,7 @@ X-Files: third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
  namespace blink {
  
  unsigned NavigatorConcurrentHardware::hardwareConcurrency() const {
-+  // fp-patches: explicit thread-count override; 8-thread persona default
++  // Stealth Chromium: explicit thread-count override; 8-thread persona default
 +  // when only the identity seed is present.
 +  if (auto count =
 +          fingerprint::SwitchUint(switches::kFingerprintHardwareConcurrency)) {
